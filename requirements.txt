@@ -1,0 +1,7 @@
+gunicorn
+ubiops
+dash>=2.0.0
+pandas
+plotly
+dash-mantine-components
+python-dateutil 
