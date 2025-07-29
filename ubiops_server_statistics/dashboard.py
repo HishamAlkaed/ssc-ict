@@ -184,7 +184,7 @@ app.layout = dmc.MantineProvider(
                                 dmc.Text("Select Project:", fw=500, fz="sm"),
                                 dmc.Select(
                                     id='project-selector',
-                                    data=[{'label': 'poc', 'value': 'poc'}, {'label': 'chat', 'value': 'chat'}],
+                                    data=[{'label': 'poc (Gemma)', 'value': 'poc'}, {'label': 'chat (alles)', 'value': 'chat'}],
                                     value='poc',
                                     style={'marginBottom': 8},
                                     size="md",
@@ -199,7 +199,7 @@ app.layout = dmc.MantineProvider(
                                 dmc.Text("Select Start Date & Time:", fw=500, fz="sm"),
                                 dmc.DateTimePicker(
                                     id='start-datetime-picker',
-                                    value=(datetime.datetime.now() - datetime.timedelta(days=2)),
+                                    value=(datetime.datetime.now() - datetime.timedelta(days=1)),
                                     style={'marginBottom': 8},
                                     size="md",
                                     radius="md",
@@ -257,7 +257,7 @@ app.layout = dmc.MantineProvider(
                                     value=['deployments.requests'],
                                     size="md",
                                     children=[
-                                        dmc.Checkbox(label='Requests', value='deployments.requests'),
+                                        dmc.Checkbox(label='Requests (request/m)', value='deployments.requests'),
                                         dmc.Checkbox(label='Failed Requests', value='deployments.failed_requests'),
                                         dmc.Checkbox(label='Request Duration', value='deployments.request_duration'),
                                         dmc.Checkbox(label='Input Volume', value='deployments.input_volume'),
@@ -265,13 +265,13 @@ app.layout = dmc.MantineProvider(
                                         dmc.Checkbox(label='Express Queue Time', value='deployments.express_queue_time'),
                                         dmc.Checkbox(label='Batch Queue Time', value='deployments.batch_queue_time'),
                                         dmc.Checkbox(label='Credits', value='deployments.credits'),
-                                        dmc.Checkbox(label='Instances', value='deployments.instances'),
-                                        dmc.Checkbox(label='Express Queue Size', value='deployments.express_queue_size'),
-                                        dmc.Checkbox(label='Batch Queue Size', value='deployments.batch_queue_size'),
+                                        # dmc.Checkbox(label='Instances', value='deployments.instances'),
+                                        # dmc.Checkbox(label='Express Queue Size', value='deployments.express_queue_size'),
+                                        # dmc.Checkbox(label='Batch Queue Size', value='deployments.batch_queue_size'),
                                         dmc.Checkbox(label='Network In', value='deployments.network_in'),
                                         dmc.Checkbox(label='Network Out', value='deployments.network_out'),
-                                        dmc.Checkbox(label='Instance Start Time', value='deployments.instance_start_time'),
-                                        dmc.Checkbox(label='Token Count', value='custom.token_count'),
+                                        # dmc.Checkbox(label='Instance Start Time', value='deployments.instance_start_time'),
+                                        # dmc.Checkbox(label='Token Count', value='custom.token_count'),
                                         dmc.Checkbox(label='Total Tokens', value='custom.total_tokens'),
                                         dmc.Checkbox(label='Prompt Tokens', value='custom.prompt_tokens'),
                                         dmc.Checkbox(label='Completion Tokens', value='custom.completion_tokens'),
@@ -357,13 +357,13 @@ ALL_METRICS = [
     'deployments.express_queue_time',
     'deployments.batch_queue_time',
     'deployments.credits',
-    'deployments.instances',
-    'deployments.express_queue_size',
-    'deployments.batch_queue_size',
+    # 'deployments.instances',
+    # 'deployments.express_queue_size',
+    # 'deployments.batch_queue_size',
     'deployments.network_in',
     'deployments.network_out',
-    'deployments.instance_start_time',
-    'custom.token_count',
+    # 'deployments.instance_start_time',
+    # 'custom.token_count',
     'custom.total_tokens',
     'custom.prompt_tokens',
     'custom.completion_tokens',
@@ -411,24 +411,24 @@ def update_dashboard(n_clicks, project, start_datetime, end_datetime, aggregatio
     # --- Metric Info Dictionary ---
     DEPLOYMENT_METRICS = {
         "deployments.credits": {"unit": "credits (float)", "description": "Usage of Credits"},
-        "deployments.instances": {"unit": "instances (float)", "description": "Average number of active deployment instances"},
-        "deployments.instance_start_time": {"unit": "seconds (float)", "description": "Average duration from instance creation to start time"},
+        # "deployments.instances": {"unit": "instances (float)", "description": "Average number of active deployment instances"},
+        # "deployments.instance_start_time": {"unit": "seconds (float)", "description": "Average duration from instance creation to start time"},
         "deployments.input_volume": {"unit": "bytes (int)", "description": "Volume of incoming data in bytes"},
         "deployments.output_volume": {"unit": "bytes (int)", "description": "Volume of outgoing data in bytes"},
         "deployments.memory_utilization": {"unit": "bytes (int)", "description": "Peak memory used during a request"},
-        "deployments.requests": {"unit": "requests (int)", "description": "Number of requests made to the object"},
-        "deployments.failed_requests": {"unit": "requests (int)", "description": "Number of failed requests made to the object"},
+        "deployments.requests": {"unit": "requests (int)", "description": "Number of requests made to the object per minute"},
+        "deployments.failed_requests": {"unit": "requests (int)", "description": "Number of failed requests made to the object per minute"},
         "deployments.request_duration": {"unit": "seconds (float)", "description": "Average time in seconds for a request to complete"},
-        "deployments.express_queue_size": {"unit": "items (int)", "description": "Average number of queued express requests"},
+        # "deployments.express_queue_size": {"unit": "items (int)", "description": "Average number of queued express requests"},
         "deployments.express_queue_time": {"unit": "items (int)", "description": "Average time in seconds for an express request to start processing"},
-        "deployments.batch_queue_size": {"unit": "items (int)", "description": "Average number of queued batch requests"},
+        # "deployments.batch_queue_size": {"unit": "items (int)", "description": "Average number of queued batch requests"},
         "deployments.batch_queue_time": {"unit": "items (int)", "description": "Average time in seconds for a batch request to start processing"},
         "deployments.network_in": {"unit": "bytes (int)", "description": "Inbound network traffic for a deployment version"},
         "deployments.network_out": {"unit": "bytes (int)", "description": "Outbound network traffic for a deployment version"},
         "custom.completion_tokens": {"unit": "tokens (int)", "description": "Total number of completion tokens"},
         "custom.prompt_tokens": {"unit": "tokens (int)", "description": "Total number of prompt tokens"},
         "custom.total_tokens": {"unit": "tokens (int)", "description": "Total number of tokens"},
-        "custom.token_count": {"unit": "tokens (int)", "description": "Total number of tokens"},
+        # "custom.token_count": {"unit": "tokens (int)", "description": "Total number of tokens"},
         "custom.completion_tokens_cumulative": {"unit": "tokens (int)", "description": "Cumulative completion tokens"},
         "custom.prompt_tokens_cumulative": {"unit": "tokens (int)", "description": "Cumulative prompt tokens"},
         "custom.total_tokens_cumulative": {"unit": "tokens (int)", "description": "Cumulative total tokens"},
@@ -444,7 +444,11 @@ def update_dashboard(n_clicks, project, start_datetime, end_datetime, aggregatio
     kpi_cards = []
     # Example: Show total requests if selected
     if 'deployments.requests' in metric_dfs and not metric_dfs['deployments.requests'].empty:
-        total_requests = metric_dfs['deployments.requests']['value'].sum()
+        # Calculate total requests by adjusting for aggregation window (rate * window_minutes)
+        df = metric_dfs['deployments.requests']
+        # aggregation_s is in seconds, convert to minutes
+        window_minutes = aggregation_s / 60.0 if aggregation_s else 1.0
+        total_requests = (df['value'] * window_minutes).sum()
         kpi_cards.append(html.Div(f"Total Requests: {total_requests:,.0f}", style={'padding': '20px', 'backgroundColor': '#f0f0f0', 'borderRadius': '5px', 'textAlign': 'center'}))
     if 'deployments.failed_requests' in metric_dfs and not metric_dfs['deployments.failed_requests'].empty:
         total_failed = metric_dfs['deployments.failed_requests']['value'].sum()
@@ -471,8 +475,31 @@ def update_dashboard(n_clicks, project, start_datetime, end_datetime, aggregatio
                 fig = go.Figure(go.Bar(x=df['timestamp'], y=df['value'], name=title))
             else:
                 fig = go.Figure(go.Scatter(x=df['timestamp'], y=df['value'], name=title, mode='lines'))
+            # Add average line for request duration and time to first token
+            if metric in ['deployments.request_duration', 'custom.time_to_first_token']:
+                avg_value = df['value'].mean()
+                fig.add_trace(go.Scatter(
+                    x=df['timestamp'],
+                    y=[avg_value]*len(df),
+                    mode='lines',
+                    name='Average',
+                    line=dict(color='red', width=2, dash='dot'),
+                    showlegend=True
+                ))
             fig.update_layout(title_text=title)
             fig.update_yaxes(title_text=yaxis_title)
+            # Show legend inside the plot area, top right
+            fig.update_layout(
+                legend=dict(
+                    x=0.99,
+                    y=0.99,
+                    xanchor='right',
+                    yanchor='top',
+                    bgcolor='rgba(255,255,255,0.7)',
+                    bordercolor='rgba(0,0,0,0.1)',
+                    borderwidth=1
+                )
+            )
             graphs.append(dcc.Graph(figure=fig))
 
     return kpi_cards, graphs
