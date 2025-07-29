@@ -447,7 +447,8 @@ def update_dashboard(n_clicks, project, start_datetime, end_datetime, aggregatio
         # Calculate total requests by adjusting for aggregation window (rate * window_minutes)
         df = metric_dfs['deployments.requests']
         # aggregation_s is in seconds, convert to minutes
-        window_minutes = aggregation_s / 60.0 if aggregation_s else 1.0
+        # window_minutes = aggregation_s / 60.0 if aggregation_s else 1.0
+        window_minutes = aggregation_s if aggregation_s else 60.0
         total_requests = (df['value'] * window_minutes).sum()
         kpi_cards.append(html.Div(f"Total Requests: {total_requests:,.0f}", style={'padding': '20px', 'backgroundColor': '#f0f0f0', 'borderRadius': '5px', 'textAlign': 'center'}))
     if 'deployments.failed_requests' in metric_dfs and not metric_dfs['deployments.failed_requests'].empty:
