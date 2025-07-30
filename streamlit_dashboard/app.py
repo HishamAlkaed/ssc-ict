@@ -150,7 +150,7 @@ def fetch_summary_stats(api, project, labels_to_use, period, ttf_threshold=3.0):
     start, end = get_time_window(period)
     # Choose aggregation period based on window length for requests/failed
     window_seconds = (end - start).total_seconds()
-    if window_seconds <= 3600: # 1 hour
+    if window_seconds <= 3700: # 1 hour
         agg = 60
     elif window_seconds <= 24*3600:  # 1 day
         agg = 300  # 5 min
@@ -249,7 +249,6 @@ def create_detailed_plot(stats, period_label):
     
     # Add failed requests as stacked bars
     if not df_failed.empty:
-        print('there are some failed stuff')
         fig.add_trace(go.Bar(
             x=df_failed['timestamp'],
             y=df_failed['value'],
@@ -260,8 +259,6 @@ def create_detailed_plot(stats, period_label):
     
     # Add unhappy requests as vertical lines using add_shape
     if not df_ttf.empty:
-        print('there are some un/happy stuff')
-
         # Find timestamps where time to first token >= 3 seconds
         unhappy_times = df_ttf[df_ttf['value'] >= 3.0]['timestamp']
         if not unhappy_times.empty:
@@ -453,7 +450,7 @@ def main():
         )
         end_time = st.time_input(
             "End Time:",
-            value=datetime.time(23, 59)
+            value=datetime.datetime.now()
         )
         
         st.divider()
