@@ -314,14 +314,6 @@ def main():
     # Custom CSS for better styling
     st.markdown("""
     <style>
-    .main-header {
-        background: linear-gradient(90deg, #2563eb 0%, #38bdf8 100%);
-        padding: 1rem;
-        border-radius: 10px;
-        color: white;
-        text-align: center;
-        margin-bottom: 2rem;
-    }
     .metric-card {
         background: gray;
         padding: 1rem;
@@ -333,14 +325,6 @@ def main():
         background-color: gray;
     }
     </style>
-    """, unsafe_allow_html=True)
-    
-    # Header
-    st.markdown("""
-    <div class="main-header">
-        <h1>🚀 UbiOps Server Usage Dashboard</h1>
-        <p>Monitor your deployment metrics and performance</p>
-    </div>
     """, unsafe_allow_html=True)
     
     # --- Always-visible summary cards and insights ---
@@ -355,59 +339,62 @@ def main():
     </style>
     """, unsafe_allow_html=True)
 
-    # --- Button to update summary ---
-    st.markdown("<h2 style='margin-bottom:0.5rem;'>📊 Performance Summary</h2>", unsafe_allow_html=True)
+    # --- Summary Cards: load and display one-by-one ---
+    periods = [('hour', 'Last Hour'), ('day', 'Last Day'), ('week', 'Last Week'), ('month', 'Last Month')]
     if 'summary_stats' not in st.session_state:
-        st.session_state.summary_stats = None
+        st.session_state.summary_stats = {}
     if 'summary_stats_time' not in st.session_state:
         st.session_state.summary_stats_time = None
     if 'clicked_card' not in st.session_state:
         st.session_state.clicked_card = None
 
     update_summary = st.button("🔄 Update Performance Summary", key="update_summary_button")
+    if update_summary:
+        st.session_state.summary_stats = {}
+        st.session_state.summary_stats_time = None
 
-    if update_summary or st.session_state.summary_stats is None:
-        # --- API connection for summary (default project: 'poc') ---
-        project = 'poc'
-        api = make_connection(project)
-        labels_to_use = GEMMA_DEPLOYMENT_LABEL_POC if project == 'poc' else None
-        periods = [('month', 'Last Month'), ('week', 'Last Week'), ('day', 'Last Day'), ('hour', 'Last Hour')]
-        stats = {p: fetch_summary_stats(api, project, labels_to_use, p) for p, _ in periods}
-        st.session_state.summary_stats = stats
-        st.session_state.summary_stats_time = datetime.datetime.now()
-    else:
-        periods = [('month', 'Last Month'), ('week', 'Last Week'), ('day', 'Last Day'), ('hour', 'Last Hour')]
-        stats = st.session_state.summary_stats
-
-    # Create clickable cards
     card_cols = st.columns(len(periods))
     for idx, (period, label) in enumerate(periods):
-        s = stats[period]
         with card_cols[idx]:
-            # Make card clickable
-            if st.button(f"📊 {label}", key=f"card_{period}", use_container_width=True):
-                st.session_state.clicked_card = label
+            # Always show the button
+            btn = st.button(f"📊 Show {label} Plot", key=f"card_{period}", use_container_width=True)
             
-            # Display card content
-            st.markdown(f"<div class='summary-card'>"
-                        f"<div class='summary-title'>{label}</div>"
-                        f"<div class='summary-value summary-grey'>Requests: {s['total_requests']:,}</div>"
-                        f"<div class='summary-value summary-grey'>Failed: {s['total_failed']:,}</div>"
-                        f"<div class='summary-value summary-green'>Happy: {s['happy']:,} ({s['happy_pct']:.0f}%)</div>"
-                        f"<div class='summary-value summary-red'>Unhappy: {s['unhappy']:,} ({s['unhappy_pct']:.0f}%)</div>"
-                        f"</div>", unsafe_allow_html=True)
-    
-    if st.session_state.summary_stats_time:
+            # Load data if not already loaded
+            if period not in st.session_state.summary_stats:
+                with st.spinner(f"Loading {label}..."):
+                    project = 'poc'
+                    api = make_connection(project)
+                    labels_to_use = GEMMA_DEPLOYMENT_LABEL_POC if project == 'poc' else None
+                    s = fetch_summary_stats(api, project, labels_to_use, period)
+                    st.session_state.summary_stats[period] = s
+            
+            # Show card content if data is available
+            s = st.session_state.summary_stats.get(period)
+            if s:
+                st.markdown(
+                    f"<div class='summary-card'>"
+                    f"<div class='summary-title'>{label}</div>"
+                    f"<div class='summary-value summary-grey'>Requests: {s['total_requests']:,}</div>"
+                    f"<div class='summary-value summary-grey'>Failed: {s['total_failed']:,}</div>"
+                    f"<div class='summary-value summary-green'>Happy: {s['happy']:,} ({s['happy_pct']:.0f}%)</div>"
+                    f"<div class='summary-value summary-red'>Unhappy: {s['unhappy']:,} ({s['unhappy_pct']:.0f}%)</div>"
+                    f"</div>", unsafe_allow_html=True
+                )
+            
+            # Handle button click
+            if btn:
+                st.session_state.clicked_card = label
+
+    if st.session_state.summary_stats:
+        st.session_state.summary_stats_time = datetime.datetime.now()
         st.caption(f"Last updated: {st.session_state.summary_stats_time.strftime('%Y-%m-%d %H:%M:%S')}")
 
     # Show detailed plot if a card was clicked
     if st.session_state.clicked_card:
         with st.expander(f"📈 Detailed View: {st.session_state.clicked_card}", expanded=True):
-            fig = create_detailed_plot(stats, st.session_state.clicked_card)
+            fig = create_detailed_plot(st.session_state.summary_stats, st.session_state.clicked_card)
             if fig:
                 st.plotly_chart(fig, use_container_width=True)
-            
-            # Add close button
             if st.button("❌ Close", key="close_plot"):
                 st.session_state.clicked_card = None
                 st.rerun()
@@ -415,9 +402,11 @@ def main():
     # --- Insights Section ---
     st.markdown("<h3 style='margin-top:1.5rem;'>🔎 Automated Insights</h3>", unsafe_allow_html=True)
     for period, label in periods:
-        insight = get_peak_load_insight(stats[period]['df_requests'], period)
-        if insight:
-            st.info(f"{label}: {insight}")
+        s = st.session_state.summary_stats.get(period)
+        if s:
+            insight = get_peak_load_insight(s['df_requests'], period)
+            if insight:
+                st.info(f"{label}: {insight}")
 
     # Sidebar for controls
     with st.sidebar:
@@ -529,22 +518,16 @@ def main():
         if st.button("🔄 Update Dashboard", type="primary", use_container_width=True):
             st.session_state.update_dashboard = True
     
-    # Main content area
+    # --- KPI Cards: load and display one-by-one ---
     if 'update_dashboard' not in st.session_state:
         st.session_state.update_dashboard = False
-    
     if st.session_state.update_dashboard:
-        # Show loading spinner
         with st.spinner("Fetching data from UbiOps API..."):
             # Parse datetime objects
             start_datetime = datetime.datetime.combine(start_date, start_time)
             end_datetime = datetime.datetime.combine(end_date, end_time)
-            
-            # Make API connection
             api = make_connection(project)
             labels_to_use = GEMMA_DEPLOYMENT_LABEL_POC if project == 'poc' else None
-            
-            # Metric Info Dictionary
             DEPLOYMENT_METRICS = {
                 "deployments.credits": {"unit": "credits (float)", "description": "Usage of Credits"},
                 "deployments.input_volume": {"unit": "bytes (int)", "description": "Volume of incoming data in bytes"},
