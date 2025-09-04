@@ -178,6 +178,8 @@ def fetch_summary_stats(api, project, labels_to_use, period, ttf_threshold=3.0):
     total_ttf = happy + unhappy
     happy_pct = (happy / total_ttf * 100) if total_ttf > 0 else 0
     unhappy_pct = (unhappy / total_ttf * 100) if total_ttf > 0 else 0
+    # Average reaction time = average TTFT within selected period
+    avg_ttf = float(df_ttf['value'].mean()) if not df_ttf.empty else 0.0
     return {
         'total_requests': total_requests,
         'total_failed': total_failed,
@@ -186,6 +188,7 @@ def fetch_summary_stats(api, project, labels_to_use, period, ttf_threshold=3.0):
         'happy_pct': happy_pct,
         'unhappy_pct': unhappy_pct,
         'total_ttf': total_ttf,
+        'avg_ttf': avg_ttf,
         'df_requests': df_requests,
         'df_failed': df_failed,
         'df_ttf': df_ttf,
@@ -314,15 +317,28 @@ def main():
     # Custom CSS for better styling
     st.markdown("""
     <style>
-    .metric-card {
-        background: gray;
-        padding: 1rem;
-        border-radius: 10px;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-        border-left: 4px solid #2563eb;
+    html, body, [class*="css"]  {
+        font-family: Inter, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Oxygen, Ubuntu, Cantarell, 'Fira Sans', 'Droid Sans', Helvetica, Arial, sans-serif;
     }
-    .stSelectbox > div > div {
-        background-color: gray;
+    .metric-card {
+        background: #ffffff;
+        padding: 1rem;
+        border-radius: 12px;
+        box-shadow: 0 2px 10px rgba(0,0,0,0.06);
+        border: 1px solid rgba(2, 6, 23, 0.06);
+    }
+    .metric-card h3 {
+        margin: 0 0 0.25rem 0;
+        font-weight: 600;
+        color: #0f172a;
+        font-size: 1rem;
+    }
+    .metric-card h2 {
+        font-weight: 700;
+        color: #2563eb;
+    }
+    .stSelectbox label {
+        font-weight: 600;
     }
     </style>
     """, unsafe_allow_html=True)
@@ -330,12 +346,13 @@ def main():
     # --- Always-visible summary cards and insights ---
     st.markdown("""
     <style>
-    .summary-card {background: #fff; border-radius: 10px; box-shadow: 0 2px 8px rgba(0,0,0,0.07); padding: 1.2rem 1.5rem; margin-bottom: 0.5rem; text-align: center;}
-    .summary-title {font-size: 1.1rem; font-weight: 600; color: #2563eb; margin-bottom: 0.2rem;}
-    .summary-value {font-size: 2.1rem; font-weight: 700; margin-bottom: 0.1rem;}
+    .summary-card {background: #ffffff; border-radius: 12px; box-shadow: 0 2px 10px rgba(0,0,0,0.06); padding: 1.1rem 1.3rem; margin-bottom: 0.5rem; text-align: center; border: 1px solid rgba(2, 6, 23, 0.06);} 
+    .summary-title {font-size: 1.0rem; font-weight: 700; color: #0f172a; margin-bottom: 0.25rem;}
+    .summary-value {font-size: 1.4rem; font-weight: 700; margin: 0.15rem 0;}
+    .summary-sub {font-size: 0.9rem; font-weight: 600; color: #0f172a; opacity: 0.8; margin-top: 0.35rem;}
     .summary-green {color: #16a34a;}
     .summary-red {color: #dc2626;}
-    .summary-grey {color: #64748b;}
+    .summary-grey {color: #475569;}
     </style>
     """, unsafe_allow_html=True)
 
@@ -378,6 +395,7 @@ def main():
                     f"<div class='summary-value summary-grey'>Failed: {s['total_failed']:,}</div>"
                     f"<div class='summary-value summary-green'>Happy: {s['happy']:,} ({s['happy_pct']:.0f}%)</div>"
                     f"<div class='summary-value summary-red'>Unhappy: {s['unhappy']:,} ({s['unhappy_pct']:.0f}%)</div>"
+                    f"<div class='summary-sub'>Avg reaction time: {s['avg_ttf']:.2f}s</div>"
                     f"</div>", unsafe_allow_html=True
                 )
             
@@ -548,68 +566,43 @@ def main():
                 "custom.total_tokens_cumulative": {"unit": "tokens (int)", "description": "Cumulative total tokens"},
                 "custom.time_to_first_token": {"unit": "seconds (float)", "description": "Time to first token in seconds"},
             }
-            
-            # Fetch data for selected metrics
-            metric_dfs = {}
-            for metric in selected_metrics:
-                metric_dfs[metric] = get_time_series_metric(api, project, metric, start_datetime, end_datetime, aggregation_s, labels=labels_to_use)
-        
-        # Display KPIs
-        st.header("📊 Key Performance Indicators")
-        
-        # Create columns for KPI cards
-        kpi_cols = st.columns(4)
-        
-        kpi_data = []
-        
-        # Calculate KPIs
-        if 'deployments.requests' in metric_dfs and not metric_dfs['deployments.requests'].empty:
-            df = metric_dfs['deployments.requests']
-            # window_minutes = aggregation_s if aggregation_s else 60.0
-            total_requests = (df['value']).sum()
-            kpi_data.append(("Total Requests", f"{total_requests:,.0f}", "📈"))
-        
-        if 'deployments.failed_requests' in metric_dfs and not metric_dfs['deployments.failed_requests'].empty:
-            # window_minutes = aggregation_s if aggregation_s else 60.0
-            total_failed = (metric_dfs['deployments.failed_requests']['value']).sum()
-            kpi_data.append(("Failed Requests", f"{total_failed:,.0f}", "❌"))
-        
-        if 'deployments.request_duration' in metric_dfs and not metric_dfs['deployments.request_duration'].empty:
-            avg_duration = metric_dfs['deployments.request_duration']['value'].mean()
-            kpi_data.append(("Avg. Request Duration", f"{avg_duration:.2f}s", "⏱️"))
-        
-        if 'custom.time_to_first_token' in metric_dfs and not metric_dfs['custom.time_to_first_token'].empty:
-            avg_ttf = metric_dfs['custom.time_to_first_token']['value'].mean()
-            kpi_data.append(("Avg. Time to First Token", f"{avg_ttf:.2f}s", "⚡"))
-        
-        # Display KPI cards
-        for i, (title, value, icon) in enumerate(kpi_data):
-            with kpi_cols[i % 4]:
-                st.markdown(f"""
-                <div class="metric-card">
-                    <h3>{icon} {title}</h3>
-                    <h2 style="color: #2563eb; margin: 0;">{value}</h2>
-                </div>
-                """, unsafe_allow_html=True)
-        
-        # Display graphs
-        st.header("📈 Metrics Visualization")
-        
-        # Create tabs for different metric categories
-        if selected_deployment_metrics and selected_custom_metrics:
-            tab1, tab2 = st.tabs(["🚀 Deployment Metrics", "🎯 Custom Metrics"])
-            
-            with tab1:
-                display_metrics_charts(metric_dfs, [deployment_metrics[m] for m in selected_deployment_metrics], DEPLOYMENT_METRICS)
-            
-            with tab2:
-                display_metrics_charts(metric_dfs, [custom_metrics[m] for m in selected_custom_metrics], DEPLOYMENT_METRICS)
-        else:
-            display_metrics_charts(metric_dfs, selected_metrics, DEPLOYMENT_METRICS)
-        
-        # Reset the update flag
-        st.session_state.update_dashboard = False
-    
+            metric_keys = [
+                'deployments.requests',
+                'deployments.failed_requests',
+                'deployments.request_duration',
+                'custom.time_to_first_token',
+            ]
+            kpi_cols = st.columns(4)
+            for i, metric in enumerate(metric_keys):
+                kpi_placeholder = kpi_cols[i % 4].empty()
+                with kpi_placeholder:
+                    with st.spinner(f"Loading {DEPLOYMENT_METRICS[metric]['description']}..."):
+                        df = get_time_series_metric(api, project, metric, start_datetime, end_datetime, aggregation_s, labels=labels_to_use)
+                        value = None
+                        icon = None
+                        if metric == 'deployments.requests' and not df.empty:
+                            value = f"{df['value'].sum():,.0f}"
+                            icon = "📈"
+                            title = "Total Requests"
+                        elif metric == 'deployments.failed_requests' and not df.empty:
+                            value = f"{df['value'].sum():,.0f}"
+                            icon = "❌"
+                            title = "Failed Requests"
+                        elif metric == 'deployments.request_duration' and not df.empty:
+                            value = f"{df['value'].mean():.2f}s"
+                            icon = "⏱️"
+                            title = "Avg. Request Duration"
+                        elif metric == 'custom.time_to_first_token' and not df.empty:
+                            value = f"{df['value'].mean():.2f}s"
+                            icon = "⚡"
+                            title = "Avg. Time to First Token"
+                        if value:
+                            st.markdown(f"""
+                            <div class="metric-card">
+                                <h3>{icon} {title}</h3>
+                                <h2 style="color: #2563eb; margin: 0;">{value}</h2>
+                            </div>
+                            """, unsafe_allow_html=True)
     else:
         # Show initial message
         st.info("👈 Use the sidebar controls to configure your dashboard and click 'Update Dashboard' to begin.")
