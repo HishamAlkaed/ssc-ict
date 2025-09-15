@@ -146,6 +146,22 @@ def fetch_ttf_fine_grained(api, project, labels_to_use, start, end):
     else:
         return pd.DataFrame(columns=['timestamp', 'value'])
 
+def fetch_metric_fine_grained(api, project, labels_to_use, start, end, metric_name):
+    # Fetch a custom metric in 1-day windows, aggregation=60
+    dfs = []
+    day = datetime.timedelta(days=1)
+    current = start
+    while current < end:
+        chunk_end = min(current + day, end)
+        df = get_time_series_metric(api, project, metric_name, current, chunk_end, 60, labels=labels_to_use)
+        if not df.empty:
+            dfs.append(df)
+        current = chunk_end
+    if dfs:
+        return pd.concat(dfs, ignore_index=True)
+    else:
+        return pd.DataFrame(columns=['timestamp', 'value'])
+
 def fetch_summary_stats(api, project, labels_to_use, period, ttf_threshold=3.0):
     start, end = get_time_window(period)
     # Choose aggregation period based on window length for requests/failed
@@ -180,6 +196,33 @@ def fetch_summary_stats(api, project, labels_to_use, period, ttf_threshold=3.0):
     unhappy_pct = (unhappy / total_ttf * 100) if total_ttf > 0 else 0
     # Average reaction time = average TTFT within selected period
     avg_ttf = float(df_ttf['value'].mean()) if not df_ttf.empty else 0.0
+    # Compute token totals for unhappy time buckets (where TTFT >= threshold)
+    unhappy_token_totals = { 'total': 0, 'prompt': 0, 'completion': 0 }
+    unhappy_token_avgs = { 'total': 0.0, 'prompt': 0.0, 'completion': 0.0 }
+    avg_unhappy_ttf = 0.0
+    if not df_ttf.empty:
+        unhappy_mask = df_ttf['value'] >= ttf_threshold
+        unhappy_times = set(df_ttf[unhappy_mask]['timestamp'])
+        if unhappy_times:
+            # average TTFT among unhappy
+            avg_unhappy_ttf = float(df_ttf[unhappy_mask]['value'].mean())
+            # Fetch token metrics ONLY when there are unhappy requests
+            df_total_tokens = fetch_metric_fine_grained(api, project, labels_to_use, start, end, 'custom.total_tokens')
+            df_prompt_tokens = fetch_metric_fine_grained(api, project, labels_to_use, start, end, 'custom.prompt_tokens')
+            df_completion_tokens = fetch_metric_fine_grained(api, project, labels_to_use, start, end, 'custom.completion_tokens')
+            # Sum tokens at unhappy timestamps
+            if not df_total_tokens.empty:
+                unhappy_token_totals['total'] = int(df_total_tokens[df_total_tokens['timestamp'].isin(unhappy_times)]['value'].sum())
+            if not df_prompt_tokens.empty:
+                unhappy_token_totals['prompt'] = int(df_prompt_tokens[df_prompt_tokens['timestamp'].isin(unhappy_times)]['value'].sum())
+            if not df_completion_tokens.empty:
+                unhappy_token_totals['completion'] = int(df_completion_tokens[df_completion_tokens['timestamp'].isin(unhappy_times)]['value'].sum())
+            # Averages per unhappy request
+            if unhappy > 0:
+                unhappy_token_avgs['total'] = unhappy_token_totals['total'] / unhappy
+                unhappy_token_avgs['prompt'] = unhappy_token_totals['prompt'] / unhappy
+                unhappy_token_avgs['completion'] = unhappy_token_totals['completion'] / unhappy
+
     return {
         'total_requests': total_requests,
         'total_failed': total_failed,
@@ -192,6 +235,13 @@ def fetch_summary_stats(api, project, labels_to_use, period, ttf_threshold=3.0):
         'df_requests': df_requests,
         'df_failed': df_failed,
         'df_ttf': df_ttf,
+        'unhappy_total_tokens': unhappy_token_totals['total'],
+        'unhappy_prompt_tokens': unhappy_token_totals['prompt'],
+        'unhappy_completion_tokens': unhappy_token_totals['completion'],
+        'unhappy_avg_total_tokens': unhappy_token_avgs['total'],
+        'unhappy_avg_prompt_tokens': unhappy_token_avgs['prompt'],
+        'unhappy_avg_completion_tokens': unhappy_token_avgs['completion'],
+        'avg_unhappy_ttf': avg_unhappy_ttf,
     }
 
 def get_peak_load_insight(df_requests, period):
@@ -395,7 +445,9 @@ def main():
                     f"<div class='summary-value summary-grey'>Failed: {s['total_failed']:,}</div>"
                     f"<div class='summary-value summary-green'>Happy: {s['happy']:,} ({s['happy_pct']:.0f}%)</div>"
                     f"<div class='summary-value summary-red'>Unhappy: {s['unhappy']:,} ({s['unhappy_pct']:.0f}%)</div>"
-                    f"<div class='summary-sub'>Avg reaction time: {s['avg_ttf']:.2f}s</div>"
+                    + (f"<div class='summary-sub'>Avg Unhappy Tokens (total/prompt/completion): {s.get('unhappy_avg_total_tokens', 0):.1f} / {s.get('unhappy_avg_prompt_tokens', 0):.1f} / {s.get('unhappy_avg_completion_tokens', 0):.1f}</div>" if s.get('unhappy', 0) > 0 else "")
+                    + (f"<div class='summary-sub'>Avg TTFT (unhappy only): {s.get('avg_unhappy_ttf', 0.0):.2f}s</div>" if s.get('unhappy', 0) > 0 else "")
+                    + f"<div class='summary-sub'>Avg reaction time: {s['avg_ttf']:.2f}s</div>"
                     f"</div>", unsafe_allow_html=True
                 )
             
