@@ -62,6 +62,11 @@ def get_time_series_metric(api, project_name, metric_name, start_date, end_date,
             pass
         if metric_name in ["deployments.requests", "deployments.failed_requests"]:
             df['value'] = [round(x) for x in df['value'] * aggregation_s]
+        # For per-request boolean flag metrics that are aggregated over a window
+        # (e.g., average rate of unhappy requests per second), scale by the
+        # aggregation period to obtain counts in the window.
+        if metric_name == "custom.time_to_first_token_larger_3s":
+            df['value'] = [round(x) for x in df['value'] * aggregation_s]
 
         return df
     except ubiops.exceptions.ApiException as e:
