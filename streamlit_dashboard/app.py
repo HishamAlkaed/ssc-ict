@@ -53,6 +53,13 @@ def get_time_series_metric(api, project_name, metric_name, start_date, end_date,
             {"timestamp": pd.to_datetime(dp["end_date"]), "value": dp["value"]}
             for dp in data_points
         ])
+        # Convert API timestamps to local timezone for display if tz-aware
+        try:
+            local_tz = datetime.datetime.now().astimezone().tzinfo
+            if pd.api.types.is_datetime64tz_dtype(df["timestamp"]):
+                df["timestamp"] = df["timestamp"].dt.tz_convert(local_tz)
+        except Exception:
+            pass
         if metric_name in ["deployments.requests", "deployments.failed_requests"]:
             df['value'] = [round(x) for x in df['value'] * aggregation_s]
 
@@ -118,17 +125,19 @@ def get_slow_requests_percentage_from_df(df, threshold_s=3.0):
     return (slow_count / total_count) * 100
 
 def get_time_window(period):
-    now = datetime.datetime.now()
+    # Use local time and convert to UTC for API queries
+    now_local = datetime.datetime.now().astimezone()
     if period == 'hour':
-        return now - datetime.timedelta(hours=1), now
+        start_local, end_local = now_local - datetime.timedelta(hours=1), now_local
     elif period == 'day':
-        return now - datetime.timedelta(days=1), now
+        start_local, end_local = now_local - datetime.timedelta(days=1), now_local
     elif period == 'week':
-        return now - datetime.timedelta(weeks=1), now
+        start_local, end_local = now_local - datetime.timedelta(weeks=1), now_local
     elif period == 'month':
-        return now - datetime.timedelta(days=30), now
+        start_local, end_local = now_local - datetime.timedelta(days=30), now_local
     else:
         raise ValueError('Unknown period')
+    return start_local.astimezone(datetime.timezone.utc), end_local.astimezone(datetime.timezone.utc)
 
 def fetch_ttf_fine_grained(api, project, labels_to_use, start, end):
     # Fetch custom.time_to_first_token in 1-day windows, aggregation=60
@@ -424,9 +433,11 @@ def main():
             "End Date:",
             value=datetime.datetime.now().date()
         )
+        # Use current local time (time component only) as default
+        _now_local_time = datetime.datetime.now().astimezone().time().replace(microsecond=0)
         end_time = st.time_input(
             "End Time:",
-            value=datetime.datetime.now()
+            value=_now_local_time
         )
         
         st.divider()
@@ -592,9 +603,12 @@ def main():
         st.session_state.update_dashboard = False
     if st.session_state.update_dashboard:
         with st.spinner("Fetching data from UbiOps API..."):
-            # Parse datetime objects
-            start_datetime = datetime.datetime.combine(start_date, start_time)
-            end_datetime = datetime.datetime.combine(end_date, end_time)
+            # Parse datetime objects in local timezone and convert to UTC for API
+            local_tz = datetime.datetime.now().astimezone().tzinfo
+            start_local = datetime.datetime.combine(start_date, start_time).replace(tzinfo=local_tz)
+            end_local = datetime.datetime.combine(end_date, end_time).replace(tzinfo=local_tz)
+            start_datetime = start_local.astimezone(datetime.timezone.utc)
+            end_datetime = end_local.astimezone(datetime.timezone.utc)
             api = make_connection(project)
             labels_to_use = GEMMA_DEPLOYMENT_LABEL_POC if selected_model == 'Gemma' else MISTRAL_DEPLOYMENT_LABEL_POC
             DEPLOYMENT_METRICS = {
@@ -654,6 +668,35 @@ def main():
                                 <h2 style="color: #2563eb; margin: 0;">{value}</h2>
                             </div>
                             """, unsafe_allow_html=True)
+
+            # Fetch and render selected metric charts
+            st.divider()
+            st.subheader("Selected Metrics")
+
+            # Build a combined metric info dict (deployment + custom are already included)
+            metric_info = DEPLOYMENT_METRICS
+
+            # Collect dataframes for selected metrics
+            metric_dfs = {}
+            for metric in selected_metrics:
+                try:
+                    metric_dfs[metric] = get_time_series_metric(
+                        api,
+                        project,
+                        metric,
+                        start_datetime,
+                        end_datetime,
+                        aggregation_s,
+                        labels=labels_to_use
+                    )
+                except Exception as ex:
+                    st.warning(f"Failed to load {metric}: {ex}")
+
+            # Render charts
+            display_metrics_charts(metric_dfs, selected_metrics, metric_info)
+
+            # Reset flag so we don't refetch until user clicks again
+            st.session_state.update_dashboard = False
     else:
         # Show initial message
         st.info("👈 Use the sidebar controls to configure your dashboard and click 'Update Dashboard' to begin.")
