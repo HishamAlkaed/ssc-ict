@@ -14,12 +14,14 @@ import numpy as np
 # ==============================================================================
 
 # --- Store credentials securely. Deel niet met derden onbewust---
+# zorg dat je token volgende permissions heeft: project-viewer, deployment-viewer, pipeline-viewer, service-user-viewer
 API_TOKENS = {
-    "poc": "Token 481b206efdcee52b165f011605263baea8d6319a", # REPLACE with your POC token
-    "chat": "Token 9155a7c8fef85ff102bf6c3dddf6b3deb51a7586"  # REPLACE with your Chat token
+    "poc": "Token 481b206efdcee52b165f011605263baea8d6319a"
 }
 # Example label to filter metrics for a specific deployment version
 GEMMA_DEPLOYMENT_LABEL_POC = "deployment_version_id:07736fa1-9999-44c1-9dbd-7de83f43663f" # REPLACE if needed
+MISTRAL_DEPLOYMENT_LABEL_POC = "deployment_version_id:a9daf20f-6762-4489-840a-9efa3e667984" # REPLACE if needed
+
 
 def make_connection(project_name):
     """Establishes a connection to the UbiOps API for a given project."""
@@ -182,15 +184,16 @@ def fetch_summary_stats(api, project, labels_to_use, period, ttf_threshold=3.0):
     df_failed = get_time_series_metric(api, project, 'deployments.failed_requests', start, end, agg, labels=labels_to_use)
     # df_failed['value'] = [round(x) for x in df_failed['value'] * agg]
 
-    # For ttf, use fine-grained fetch
+    # For ttft (average reaction time), use fine-grained fetch
     df_ttf = fetch_ttf_fine_grained(api, project, labels_to_use, start, end)
-    # print(df_ttf)
+    # For unhappy flags (0/1), use server-side metric
+    df_unhappy_flags = fetch_metric_fine_grained(api, project, labels_to_use, start, end, 'custom.time_to_first_token_larger_3s')
 
     total_requests = df_requests['value'].sum() if not df_requests.empty else 0
     total_failed = df_failed['value'].sum() if not df_failed.empty else 0
-    # Happy/unhappy requests: count in ttf df
-    happy = int((df_ttf['value'] < ttf_threshold).sum()) if not df_ttf.empty else 0
-    unhappy = int((df_ttf['value'] >= ttf_threshold).sum()) if not df_ttf.empty else 0
+    # Happy/unhappy requests: use server-side flags metric
+    unhappy = int(df_unhappy_flags['value'].sum()) if not df_unhappy_flags.empty else 0
+    happy = max(int(total_requests - unhappy), 0)
     total_ttf = happy + unhappy
     happy_pct = (happy / total_ttf * 100) if total_ttf > 0 else 0
     unhappy_pct = (unhappy / total_ttf * 100) if total_ttf > 0 else 0
@@ -200,28 +203,30 @@ def fetch_summary_stats(api, project, labels_to_use, period, ttf_threshold=3.0):
     unhappy_token_totals = { 'total': 0, 'prompt': 0, 'completion': 0 }
     unhappy_token_avgs = { 'total': 0.0, 'prompt': 0.0, 'completion': 0.0 }
     avg_unhappy_ttf = 0.0
-    if not df_ttf.empty:
-        unhappy_mask = df_ttf['value'] >= ttf_threshold
-        unhappy_times = set(df_ttf[unhappy_mask]['timestamp'])
-        if unhappy_times:
-            # average TTFT among unhappy
-            avg_unhappy_ttf = float(df_ttf[unhappy_mask]['value'].mean())
-            # Fetch token metrics ONLY when there are unhappy requests
-            df_total_tokens = fetch_metric_fine_grained(api, project, labels_to_use, start, end, 'custom.total_tokens')
-            df_prompt_tokens = fetch_metric_fine_grained(api, project, labels_to_use, start, end, 'custom.prompt_tokens')
-            df_completion_tokens = fetch_metric_fine_grained(api, project, labels_to_use, start, end, 'custom.completion_tokens')
-            # Sum tokens at unhappy timestamps
-            if not df_total_tokens.empty:
-                unhappy_token_totals['total'] = int(df_total_tokens[df_total_tokens['timestamp'].isin(unhappy_times)]['value'].sum())
-            if not df_prompt_tokens.empty:
-                unhappy_token_totals['prompt'] = int(df_prompt_tokens[df_prompt_tokens['timestamp'].isin(unhappy_times)]['value'].sum())
-            if not df_completion_tokens.empty:
-                unhappy_token_totals['completion'] = int(df_completion_tokens[df_completion_tokens['timestamp'].isin(unhappy_times)]['value'].sum())
-            # Averages per unhappy request
-            if unhappy > 0:
-                unhappy_token_avgs['total'] = unhappy_token_totals['total'] / unhappy
-                unhappy_token_avgs['prompt'] = unhappy_token_totals['prompt'] / unhappy
-                unhappy_token_avgs['completion'] = unhappy_token_totals['completion'] / unhappy
+    # Determine unhappy timestamps from server-side flags
+    unhappy_times = set(df_unhappy_flags[df_unhappy_flags['value'] >= 1]['timestamp']) if not df_unhappy_flags.empty else set()
+    if unhappy_times:
+        # average TTFT among unhappy using ttft values at unhappy timestamps
+        if not df_ttf.empty:
+            df_ttf_unhappy = df_ttf[df_ttf['timestamp'].isin(unhappy_times)]
+            if not df_ttf_unhappy.empty:
+                avg_unhappy_ttf = float(df_ttf_unhappy['value'].mean())
+        # Fetch token metrics ONLY when there are unhappy requests
+        df_total_tokens = fetch_metric_fine_grained(api, project, labels_to_use, start, end, 'custom.total_tokens')
+        df_prompt_tokens = fetch_metric_fine_grained(api, project, labels_to_use, start, end, 'custom.prompt_tokens')
+        df_completion_tokens = fetch_metric_fine_grained(api, project, labels_to_use, start, end, 'custom.completion_tokens')
+        # Sum tokens at unhappy timestamps
+        if not df_total_tokens.empty:
+            unhappy_token_totals['total'] = int(df_total_tokens[df_total_tokens['timestamp'].isin(unhappy_times)]['value'].sum())
+        if not df_prompt_tokens.empty:
+            unhappy_token_totals['prompt'] = int(df_prompt_tokens[df_prompt_tokens['timestamp'].isin(unhappy_times)]['value'].sum())
+        if not df_completion_tokens.empty:
+            unhappy_token_totals['completion'] = int(df_completion_tokens[df_completion_tokens['timestamp'].isin(unhappy_times)]['value'].sum())
+        # Averages per unhappy request
+        if unhappy > 0:
+            unhappy_token_avgs['total'] = unhappy_token_totals['total'] / unhappy
+            unhappy_token_avgs['prompt'] = unhappy_token_totals['prompt'] / unhappy
+            unhappy_token_avgs['completion'] = unhappy_token_totals['completion'] / unhappy
 
     return {
         'total_requests': total_requests,
@@ -235,6 +240,7 @@ def fetch_summary_stats(api, project, labels_to_use, period, ttf_threshold=3.0):
         'df_requests': df_requests,
         'df_failed': df_failed,
         'df_ttf': df_ttf,
+        'df_unhappy': df_unhappy_flags,
         'unhappy_total_tokens': unhappy_token_totals['total'],
         'unhappy_prompt_tokens': unhappy_token_totals['prompt'],
         'unhappy_completion_tokens': unhappy_token_totals['completion'],
@@ -283,6 +289,7 @@ def create_detailed_plot(stats, period_label):
     df_requests = data['df_requests']
     df_failed = data.get('df_failed', pd.DataFrame())
     df_ttf = data.get('df_ttf', pd.DataFrame())
+    df_unhappy = data.get('df_unhappy', pd.DataFrame())
     
     if df_requests.empty:
         st.warning("No data available for this period")
@@ -310,15 +317,11 @@ def create_detailed_plot(stats, period_label):
             opacity=0.7
         ))
     
-    # Add unhappy requests as vertical lines using add_shape
-    if not df_ttf.empty:
-        # Find timestamps where time to first token >= 3 seconds
-        unhappy_times = df_ttf[df_ttf['value'] >= 3.0]['timestamp']
+    # Add unhappy requests as vertical lines using server-side flags
+    if df_unhappy is not None and not df_unhappy.empty:
+        unhappy_times = df_unhappy[df_unhappy['value'] >= 1]['timestamp']
         if not unhappy_times.empty:
-            # Get the y-axis range for the vertical lines
             y_max = df_requests['value'].max() if not df_requests.empty else 100
-            
-            # Create vertical lines for each unhappy request
             for i, time in enumerate(unhappy_times):
                 fig.add_shape(
                     type="line",
@@ -393,105 +396,19 @@ def main():
     </style>
     """, unsafe_allow_html=True)
     
-    # --- Always-visible summary cards and insights ---
-    st.markdown("""
-    <style>
-    .summary-card {background: #ffffff; border-radius: 12px; box-shadow: 0 2px 10px rgba(0,0,0,0.06); padding: 1.1rem 1.3rem; margin-bottom: 0.5rem; text-align: center; border: 1px solid rgba(2, 6, 23, 0.06);} 
-    .summary-title {font-size: 1.0rem; font-weight: 700; color: #0f172a; margin-bottom: 0.25rem;}
-    .summary-value {font-size: 1.4rem; font-weight: 700; margin: 0.15rem 0;}
-    .summary-sub {font-size: 0.9rem; font-weight: 600; color: #0f172a; opacity: 0.8; margin-top: 0.35rem;}
-    .summary-green {color: #16a34a;}
-    .summary-red {color: #dc2626;}
-    .summary-grey {color: #475569;}
-    </style>
-    """, unsafe_allow_html=True)
-
-    # --- Summary Cards: load and display one-by-one ---
-    periods = [('hour', 'Last Hour'), ('day', 'Last Day'), ('week', 'Last Week'), ('month', 'Last Month')]
-    if 'summary_stats' not in st.session_state:
-        st.session_state.summary_stats = {}
-    if 'summary_stats_time' not in st.session_state:
-        st.session_state.summary_stats_time = None
-    if 'clicked_card' not in st.session_state:
-        st.session_state.clicked_card = None
-
-    update_summary = st.button("🔄 Update Performance Summary", key="update_summary_button")
-    if update_summary:
-        st.session_state.summary_stats = {}
-        st.session_state.summary_stats_time = None
-
-    card_cols = st.columns(len(periods))
-    for idx, (period, label) in enumerate(periods):
-        with card_cols[idx]:
-            # Always show the button
-            btn = st.button(f"📊 Show {label} Plot", key=f"card_{period}", use_container_width=True)
-            
-            # Load data if not already loaded
-            if period not in st.session_state.summary_stats:
-                with st.spinner(f"Loading {label}..."):
-                    project = 'poc'
-                    api = make_connection(project)
-                    labels_to_use = GEMMA_DEPLOYMENT_LABEL_POC if project == 'poc' else None
-                    s = fetch_summary_stats(api, project, labels_to_use, period)
-                    st.session_state.summary_stats[period] = s
-            
-            # Show card content if data is available
-            s = st.session_state.summary_stats.get(period)
-            if s:
-                st.markdown(
-                    f"<div class='summary-card'>"
-                    f"<div class='summary-title'>{label}</div>"
-                    f"<div class='summary-value summary-grey'>Requests: {s['total_requests']:,}</div>"
-                    f"<div class='summary-value summary-grey'>Failed: {s['total_failed']:,}</div>"
-                    f"<div class='summary-value summary-green'>Happy: {s['happy']:,} ({s['happy_pct']:.0f}%)</div>"
-                    f"<div class='summary-value summary-red'>Unhappy: {s['unhappy']:,} ({s['unhappy_pct']:.0f}%)</div>"
-                    + (f"<div class='summary-sub'>Avg Unhappy Tokens (total/prompt/completion): {s.get('unhappy_avg_total_tokens', 0):.1f} / {s.get('unhappy_avg_prompt_tokens', 0):.1f} / {s.get('unhappy_avg_completion_tokens', 0):.1f}</div>" if s.get('unhappy', 0) > 0 else "")
-                    + (f"<div class='summary-sub'>Avg TTFT (unhappy only): {s.get('avg_unhappy_ttf', 0.0):.2f}s</div>" if s.get('unhappy', 0) > 0 else "")
-                    + f"<div class='summary-sub'>Avg reaction time: {s['avg_ttf']:.2f}s</div>"
-                    f"</div>", unsafe_allow_html=True
-                )
-            
-            # Handle button click
-            if btn:
-                st.session_state.clicked_card = label
-
-    if st.session_state.summary_stats:
-        st.session_state.summary_stats_time = datetime.datetime.now()
-        st.caption(f"Last updated: {st.session_state.summary_stats_time.strftime('%Y-%m-%d %H:%M:%S')}")
-
-    # Show detailed plot if a card was clicked
-    if st.session_state.clicked_card:
-        with st.expander(f"📈 Detailed View: {st.session_state.clicked_card}", expanded=True):
-            fig = create_detailed_plot(st.session_state.summary_stats, st.session_state.clicked_card)
-            if fig:
-                st.plotly_chart(fig, use_container_width=True)
-            if st.button("❌ Close", key="close_plot"):
-                st.session_state.clicked_card = None
-                st.rerun()
-
-    # --- Insights Section ---
-    st.markdown("<h3 style='margin-top:1.5rem;'>🔎 Automated Insights</h3>", unsafe_allow_html=True)
-    for period, label in periods:
-        s = st.session_state.summary_stats.get(period)
-        if s:
-            insight = get_peak_load_insight(s['df_requests'], period)
-            if insight:
-                st.info(f"{label}: {insight}")
-
-    # Sidebar for controls
+    # Sidebar for controls (placed first so selections affect all sections)
     with st.sidebar:
         st.header("📊 Dashboard Controls")
-        
-        # Project selector
-        project = st.selectbox(
-            "Select Project:",
-            options=['poc', 'chat'],
-            format_func=lambda x: 'poc (Gemma)' if x == 'poc' else 'chat (alles)',
+
+        # Model selector
+        selected_model = st.selectbox(
+            "Select Model:",
+            options=["Gemma", "Mistral"],
             index=0
         )
-        
+
         st.divider()
-        
+
         # Date and time selectors
         st.subheader("📅 Time Range")
         start_date = st.date_input(
@@ -587,6 +504,88 @@ def main():
         # Update button
         if st.button("🔄 Update Dashboard", type="primary", use_container_width=True):
             st.session_state.update_dashboard = True
+
+    # Determine project and labels based on selection
+    project = 'poc'
+    labels_to_use_summary = GEMMA_DEPLOYMENT_LABEL_POC if selected_model == 'Gemma' else MISTRAL_DEPLOYMENT_LABEL_POC
+
+    # --- Always-visible summary cards and insights ---
+    st.markdown("""
+    <style>
+    .summary-card {background: #ffffff; border-radius: 12px; box-shadow: 0 2px 10px rgba(0,0,0,0.06); padding: 1.1rem 1.3rem; margin-bottom: 0.5rem; text-align: center; border: 1px solid rgba(2, 6, 23, 0.06);} 
+    .summary-title {font-size: 1.0rem; font-weight: 700; color: #0f172a; margin-bottom: 0.25rem;}
+    .summary-value {font-size: 1.4rem; font-weight: 700; margin: 0.15rem 0;}
+    .summary-sub {font-size: 0.9rem; font-weight: 600; color: #0f172a; opacity: 0.8; margin-top: 0.35rem;}
+    .summary-green {color: #16a34a;}
+    .summary-red {color: #dc2626;}
+    .summary-grey {color: #475569;}
+    </style>
+    """, unsafe_allow_html=True)
+
+    # --- Summary Cards: load and display one-by-one ---
+    periods = [('hour', 'Last Hour'), ('day', 'Last Day'), ('week', 'Last Week'), ('month', 'Last Month')]
+    if 'summary_stats' not in st.session_state:
+        st.session_state.summary_stats = {}
+    if 'summary_stats_time' not in st.session_state:
+        st.session_state.summary_stats_time = None
+    if 'clicked_card' not in st.session_state:
+        st.session_state.clicked_card = None
+
+    update_summary = st.button("🔄 Update Performance Summary", key="update_summary_button")
+    if update_summary:
+        st.session_state.summary_stats = {}
+        st.session_state.summary_stats_time = None
+
+    card_cols = st.columns(len(periods))
+    for idx, (period, label) in enumerate(periods):
+        with card_cols[idx]:
+            btn = st.button(f"📊 Show {label} Plot", key=f"card_{period}", use_container_width=True)
+
+            if period not in st.session_state.summary_stats:
+                with st.spinner(f"Loading {label}..."):
+                    api = make_connection(project)
+                    s = fetch_summary_stats(api, project, labels_to_use_summary, period)
+                    st.session_state.summary_stats[period] = s
+
+            s = st.session_state.summary_stats.get(period)
+            if s:
+                st.markdown(
+                    f"<div class='summary-card'>"
+                    f"<div class='summary-title'>{label} ({selected_model})</div>"
+                    f"<div class='summary-value summary-grey'>Requests: {s['total_requests']:,}</div>"
+                    f"<div class='summary-value summary-grey'>Failed: {s['total_failed']:,}</div>"
+                    f"<div class='summary-value summary-green'>Happy: {s['happy']:,} ({s['happy_pct']:.0f}%)</div>"
+                    f"<div class='summary-value summary-red'>Unhappy: {s['unhappy']:,} ({s['unhappy_pct']:.0f}%)</div>"
+                    + (f"<div class='summary-sub'>Avg Unhappy Tokens (total/prompt/completion): {s.get('unhappy_avg_total_tokens', 0):.1f} / {s.get('unhappy_avg_prompt_tokens', 0):.1f} / {s.get('unhappy_avg_completion_tokens', 0):.1f}</div>" if s.get('unhappy', 0) > 0 else "")
+                    + (f"<div class='summary-sub'>Avg TTFT (unhappy only): {s.get('avg_unhappy_ttf', 0.0):.2f}s</div>" if s.get('unhappy', 0) > 0 else "")
+                    + f"<div class='summary-sub'>Avg reaction time: {s['avg_ttf']:.2f}s</div>"
+                    f"</div>", unsafe_allow_html=True
+                )
+
+            if btn:
+                st.session_state.clicked_card = label
+
+    if st.session_state.summary_stats:
+        st.session_state.summary_stats_time = datetime.datetime.now()
+        st.caption(f"Last updated: {st.session_state.summary_stats_time.strftime('%Y-%m-%d %H:%M:%S')}")
+
+    if st.session_state.clicked_card:
+        with st.expander(f"📈 Detailed View: {st.session_state.clicked_card}", expanded=True):
+            fig = create_detailed_plot(st.session_state.summary_stats, st.session_state.clicked_card)
+            if fig:
+                st.plotly_chart(fig, use_container_width=True)
+            if st.button("❌ Close", key="close_plot"):
+                st.session_state.clicked_card = None
+                st.rerun()
+
+    # --- Insights Section ---
+    st.markdown("<h3 style='margin-top:1.5rem;'>🔎 Automated Insights</h3>", unsafe_allow_html=True)
+    for period, label in periods:
+        s = st.session_state.summary_stats.get(period)
+        if s:
+            insight = get_peak_load_insight(s['df_requests'], period)
+            if insight:
+                st.info(f"{label}: {insight}")
     
     # --- KPI Cards: load and display one-by-one ---
     if 'update_dashboard' not in st.session_state:
@@ -597,7 +596,7 @@ def main():
             start_datetime = datetime.datetime.combine(start_date, start_time)
             end_datetime = datetime.datetime.combine(end_date, end_time)
             api = make_connection(project)
-            labels_to_use = GEMMA_DEPLOYMENT_LABEL_POC if project == 'poc' else None
+            labels_to_use = GEMMA_DEPLOYMENT_LABEL_POC if selected_model == 'Gemma' else MISTRAL_DEPLOYMENT_LABEL_POC
             DEPLOYMENT_METRICS = {
                 "deployments.credits": {"unit": "credits (float)", "description": "Usage of Credits"},
                 "deployments.input_volume": {"unit": "bytes (int)", "description": "Volume of incoming data in bytes"},

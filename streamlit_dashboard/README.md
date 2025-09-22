@@ -30,17 +30,16 @@ A modern, interactive dashboard for monitoring UbiOps deployment metrics and per
    pip install -r requirements.txt
    ```
 
-3. **Configure API tokens:**
-   Edit the `app.py` file and update the `API_TOKENS` dictionary with your UbiOps API tokens:
+3. **Configure API token:**
+   Edit the `app.py` file and update the `API_TOKENS` dictionary with your UbiOps API token for the `poc` project:
    ```python
    API_TOKENS = {
-       "poc": "Token YOUR_POC_TOKEN_HERE",
-       "chat": "Token YOUR_CHAT_TOKEN_HERE"
+       "poc": "Token YOUR_POC_TOKEN_HERE"
    }
    ```
 
 4. **Update deployment labels (if needed):**
-   If you need to filter metrics for specific deployment versions, update the `GEMMA_DEPLOYMENT_LABEL_POC` variable.
+   If you need to filter metrics for specific deployment versions, update the `GEMMA_DEPLOYMENT_LABEL_POC` and `MISTRAL_DEPLOYMENT_LABEL_POC` variables.
 
 ## 🚀 Running the Application
 
@@ -54,8 +53,8 @@ A modern, interactive dashboard for monitoring UbiOps deployment metrics and per
 
 ## 📊 How to Use
 
-### 1. **Select Project**
-   - Choose between 'poc (Gemma)' or 'chat (alles)' projects
+### 1. **Select Model**
+   - Choose the model to analyze: 'Gemma' or 'Mistral'
 
 ### 2. **Set Time Range**
    - Select start and end dates
@@ -100,9 +99,9 @@ A modern, interactive dashboard for monitoring UbiOps deployment metrics and per
 ## 🔧 Configuration
 
 ### API Configuration
-- Update `API_TOKENS` with your UbiOps tokens
+- Update `API_TOKENS` with your UbiOps token for the `poc` project
 - Modify `configuration.host` if using a different UbiOps instance
-- Adjust deployment labels for specific filtering
+- Adjust deployment labels for specific filtering: `GEMMA_DEPLOYMENT_LABEL_POC`, `MISTRAL_DEPLOYMENT_LABEL_POC`
 
 ### Styling
 - Custom CSS for modern appearance
