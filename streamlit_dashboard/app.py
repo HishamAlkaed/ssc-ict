@@ -410,6 +410,16 @@ def main():
     </style>
     """, unsafe_allow_html=True)
     
+    # Initialize persistent defaults in session state (only once per session)
+    if 'start_date' not in st.session_state:
+        st.session_state.start_date = (datetime.datetime.now() - datetime.timedelta(days=1)).date()
+    if 'start_time' not in st.session_state:
+        st.session_state.start_time = datetime.time(0, 0)
+    if 'end_date' not in st.session_state:
+        st.session_state.end_date = datetime.datetime.now().date()
+    if 'end_time' not in st.session_state:
+        st.session_state.end_time = datetime.datetime.now().astimezone().time().replace(microsecond=0)
+
     # Sidebar for controls (placed first so selections affect all sections)
     with st.sidebar:
         st.header("📊 Dashboard Controls")
@@ -427,22 +437,25 @@ def main():
         st.subheader("📅 Time Range")
         start_date = st.date_input(
             "Start Date:",
-            value=(datetime.datetime.now() - datetime.timedelta(days=1)).date()
+            value=st.session_state.start_date,
+            key="start_date"
         )
         start_time = st.time_input(
             "Start Time:",
-            value=datetime.time(0, 0)
+            value=st.session_state.start_time,
+            key="start_time"
         )
         
         end_date = st.date_input(
             "End Date:",
-            value=datetime.datetime.now().date()
+            value=st.session_state.end_date,
+            key="end_date"
         )
-        # Use current local time (time component only) as default
-        _now_local_time = datetime.datetime.now().astimezone().time().replace(microsecond=0)
+        # Use session state's time value so it doesn't reset on rerun
         end_time = st.time_input(
             "End Time:",
-            value=_now_local_time
+            value=st.session_state.end_time,
+            key="end_time"
         )
         
         st.divider()
