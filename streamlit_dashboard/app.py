@@ -8,6 +8,7 @@ import datetime
 from dateutil import parser
 import time
 import numpy as np
+import pytz
 
 # ==============================================================================
 # 1. UbiOps API Configuration & Helper Functions
@@ -21,6 +22,9 @@ API_TOKENS = {
 # Example label to filter metrics for a specific deployment version
 GEMMA_DEPLOYMENT_LABEL_POC = "deployment_version_id:07736fa1-9999-44c1-9dbd-7de83f43663f" # REPLACE if needed
 MISTRAL_DEPLOYMENT_LABEL_POC = "deployment_version_id:a9daf20f-6762-4489-840a-9efa3e667984" # REPLACE if needed
+
+# Netherlands timezone configuration
+NETHERLANDS_TZ = pytz.timezone('Europe/Amsterdam')
 
 
 def make_connection(project_name):
@@ -53,11 +57,13 @@ def get_time_series_metric(api, project_name, metric_name, start_date, end_date,
             {"timestamp": pd.to_datetime(dp["end_date"]), "value": dp["value"]}
             for dp in data_points
         ])
-        # Convert API timestamps to local timezone for display if tz-aware
+        # Convert API timestamps to Netherlands timezone for display if tz-aware
         try:
-            local_tz = datetime.datetime.now().astimezone().tzinfo
             if pd.api.types.is_datetime64tz_dtype(df["timestamp"]):
-                df["timestamp"] = df["timestamp"].dt.tz_convert(local_tz)
+                df["timestamp"] = df["timestamp"].dt.tz_convert(NETHERLANDS_TZ)
+            else:
+                # If timestamps are naive, assume they are UTC and convert to Netherlands timezone
+                df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True).dt.tz_convert(NETHERLANDS_TZ)
         except Exception:
             pass
         if metric_name in ["deployments.requests", "deployments.failed_requests"]:
@@ -130,19 +136,19 @@ def get_slow_requests_percentage_from_df(df, threshold_s=3.0):
     return (slow_count / total_count) * 100
 
 def get_time_window(period):
-    # Use local time and convert to UTC for API queries
-    now_local = datetime.datetime.now().astimezone()
+    # Use Netherlands timezone and convert to UTC for API queries
+    now_netherlands = datetime.datetime.now(NETHERLANDS_TZ)
     if period == 'hour':
-        start_local, end_local = now_local - datetime.timedelta(hours=1), now_local
+        start_netherlands, end_netherlands = now_netherlands - datetime.timedelta(hours=1), now_netherlands
     elif period == 'day':
-        start_local, end_local = now_local - datetime.timedelta(days=1), now_local
+        start_netherlands, end_netherlands = now_netherlands - datetime.timedelta(days=1), now_netherlands
     elif period == 'week':
-        start_local, end_local = now_local - datetime.timedelta(weeks=1), now_local
+        start_netherlands, end_netherlands = now_netherlands - datetime.timedelta(weeks=1), now_netherlands
     elif period == 'month':
-        start_local, end_local = now_local - datetime.timedelta(days=30), now_local
+        start_netherlands, end_netherlands = now_netherlands - datetime.timedelta(days=30), now_netherlands
     else:
         raise ValueError('Unknown period')
-    return start_local.astimezone(datetime.timezone.utc), end_local.astimezone(datetime.timezone.utc)
+    return start_netherlands.astimezone(datetime.timezone.utc), end_netherlands.astimezone(datetime.timezone.utc)
 
 def fetch_ttf_fine_grained(api, project, labels_to_use, start, end):
     # Fetch custom.time_to_first_token in 1-day windows, aggregation=60
@@ -412,13 +418,13 @@ def main():
     
     # Initialize persistent defaults in session state (only once per session)
     if 'start_date' not in st.session_state:
-        st.session_state.start_date = (datetime.datetime.now() - datetime.timedelta(days=1)).date()
+        st.session_state.start_date = (datetime.datetime.now(NETHERLANDS_TZ) - datetime.timedelta(days=1)).date()
     if 'start_time' not in st.session_state:
         st.session_state.start_time = datetime.time(0, 0)
     if 'end_date' not in st.session_state:
-        st.session_state.end_date = datetime.datetime.now().date()
+        st.session_state.end_date = datetime.datetime.now(NETHERLANDS_TZ).date()
     if 'end_time' not in st.session_state:
-        st.session_state.end_time = datetime.datetime.now().astimezone().time().replace(microsecond=0)
+        st.session_state.end_time = datetime.datetime.now(NETHERLANDS_TZ).time().replace(microsecond=0)
 
     # Sidebar for controls (placed first so selections affect all sections)
     with st.sidebar:
@@ -427,7 +433,7 @@ def main():
         # Model selector
         selected_model = st.selectbox(
             "Select Model:",
-            options=["Gemma", "Mistral"],
+            options=["Mistral", "Gemma"],
             index=0
         )
 
@@ -586,7 +592,7 @@ def main():
                     f"<div class='summary-value summary-green'>Happy: {s['happy']:,} ({s['happy_pct']:.0f}%)</div>"
                     f"<div class='summary-value summary-red'>Unhappy: {s['unhappy']:,} ({s['unhappy_pct']:.0f}%)</div>"
                     + (f"<div class='summary-sub'>Avg Unhappy Tokens (total/prompt/completion): {s.get('unhappy_avg_total_tokens', 0):.1f} / {s.get('unhappy_avg_prompt_tokens', 0):.1f} / {s.get('unhappy_avg_completion_tokens', 0):.1f}</div>" if s.get('unhappy', 0) > 0 else "")
-                    + (f"<div class='summary-sub'>Avg TTFT (unhappy only): {s.get('avg_unhappy_ttf', 0.0):.2f}s</div>" if s.get('unhappy', 0) > 0 else "")
+                    + (f"<div class='summary-sub'>Avg reaction time (unhappy only): {s.get('avg_unhappy_ttf', 0.0):.2f}s</div>" if s.get('unhappy', 0) > 0 else "")
                     + f"<div class='summary-sub'>Avg reaction time: {s['avg_ttf']:.2f}s</div>"
                     f"</div>", unsafe_allow_html=True
                 )
@@ -595,8 +601,8 @@ def main():
                 st.session_state.clicked_card = label
 
     if st.session_state.summary_stats:
-        st.session_state.summary_stats_time = datetime.datetime.now()
-        st.caption(f"Last updated: {st.session_state.summary_stats_time.strftime('%Y-%m-%d %H:%M:%S')}")
+        st.session_state.summary_stats_time = datetime.datetime.now(NETHERLANDS_TZ)
+        st.caption(f"Last updated: {st.session_state.summary_stats_time.strftime('%Y-%m-%d %H:%M:%S %Z')}")
 
     if st.session_state.clicked_card:
         with st.expander(f"📈 Detailed View: {st.session_state.clicked_card}", expanded=True):
@@ -621,12 +627,11 @@ def main():
         st.session_state.update_dashboard = False
     if st.session_state.update_dashboard:
         with st.spinner("Fetching data from UbiOps API..."):
-            # Parse datetime objects in local timezone and convert to UTC for API
-            local_tz = datetime.datetime.now().astimezone().tzinfo
-            start_local = datetime.datetime.combine(start_date, start_time).replace(tzinfo=local_tz)
-            end_local = datetime.datetime.combine(end_date, end_time).replace(tzinfo=local_tz)
-            start_datetime = start_local.astimezone(datetime.timezone.utc)
-            end_datetime = end_local.astimezone(datetime.timezone.utc)
+            # Parse datetime objects in Netherlands timezone and convert to UTC for API
+            start_netherlands = NETHERLANDS_TZ.localize(datetime.datetime.combine(start_date, start_time))
+            end_netherlands = NETHERLANDS_TZ.localize(datetime.datetime.combine(end_date, end_time))
+            start_datetime = start_netherlands.astimezone(datetime.timezone.utc)
+            end_datetime = end_netherlands.astimezone(datetime.timezone.utc)
             api = make_connection(project)
             labels_to_use = GEMMA_DEPLOYMENT_LABEL_POC if selected_model == 'Gemma' else MISTRAL_DEPLOYMENT_LABEL_POC
             DEPLOYMENT_METRICS = {
