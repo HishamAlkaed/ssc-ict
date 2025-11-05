@@ -3,12 +3,9 @@ import ubiops
 import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
-from plotly.subplots import make_subplots
 import datetime
-from dateutil import parser
-import time
-import numpy as np
 import pytz
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # ==============================================================================
 # 1. UbiOps API Configuration & Helper Functions
@@ -19,121 +16,133 @@ import pytz
 API_TOKENS = {
     "poc": "Token 481b206efdcee52b165f011605263baea8d6319a"
 }
-# Example label to filter metrics for a specific deployment version
-GEMMA_DEPLOYMENT_LABEL_POC = "deployment_version_id:07736fa1-9999-44c1-9dbd-7de83f43663f" # REPLACE if needed
-MISTRAL_DEPLOYMENT_LABEL_POC = "deployment_version_id:a9daf20f-6762-4489-840a-9efa3e667984" # REPLACE if needed
+# (labels are dynamically built from selected deployments' versions)
 
 # Netherlands timezone configuration
 NETHERLANDS_TZ = pytz.timezone('Europe/Amsterdam')
 
 
+@st.cache_resource(show_spinner=False)
 def make_connection(project_name):
-    """Establishes a connection to the UbiOps API for a given project."""
+    """Establish and cache a CoreApi client for the given project."""
     configuration = ubiops.Configuration()
     configuration.api_key['Authorization'] = API_TOKENS[project_name]
-    configuration.host = "https://api.demo.vlam.ai/v2.1" # Adjust if necessary
+    configuration.host = "https://api.demo.vlam.ai/v2.1"
     api_client = ubiops.ApiClient(configuration)
     return ubiops.CoreApi(api_client)
 
-def get_time_series_metric(api, project_name, metric_name, start_date, end_date, aggregation_s, labels=None):
-    """Fetches aggregated time-series data from UbiOps."""
+@st.cache_data(ttl=120, show_spinner=False)
+def list_deployments_cached(project_name):
+    """Return a cached list of deployment names in the project."""
     try:
-        response = api.time_series_data_list(
-            project_name=project_name,
-            metric=metric_name,
-            start_date=start_date.isoformat(),
-            end_date=end_date.isoformat(),
-            aggregation_period=aggregation_s,
-            labels=labels
-        )
-        # if metric_name == "deployments.requests" and (end_date - start_date).total_seconds() <= 10*3600:
-        #     print("hi", response)
-
-        data_points = response.to_dict().get('data_points', [])
-        if not data_points:
-            # Return empty DataFrame with correct columns
-            return pd.DataFrame(columns=['timestamp', 'value'])
-        df = pd.DataFrame([
-            {"timestamp": pd.to_datetime(dp["end_date"]), "value": dp["value"]}
-            for dp in data_points
-        ])
-        # Convert API timestamps to Netherlands timezone for display if tz-aware
-        try:
-            if pd.api.types.is_datetime64tz_dtype(df["timestamp"]):
-                df["timestamp"] = df["timestamp"].dt.tz_convert(NETHERLANDS_TZ)
+        api = make_connection(project_name)
+        deployments = api.deployments_list(project_name=project_name)
+        names = []
+        for d in deployments:
+            if isinstance(d, dict):
+                name = d.get('name')
             else:
-                # If timestamps are naive, assume they are UTC and convert to Netherlands timezone
-                df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True).dt.tz_convert(NETHERLANDS_TZ)
+                name = getattr(d, 'name', None)
+            if name:
+                names.append(name)
+        return sorted(list(set(names)))
+    except Exception as e:
+        st.error(f"Failed to list deployments: {e}")
+        return []
+
+@st.cache_data(ttl=120, show_spinner=False)
+def get_labels_for_deployments_cached(project_name, deployment_names):
+    """Build a cached list of labels for all versions of the selected deployments."""
+    api = make_connection(project_name)
+    labels = []
+    for dep_name in deployment_names:
+        try:
+            versions = api.deployment_versions_list(project_name=project_name, deployment_name=dep_name)
+            for v in versions:
+                if isinstance(v, dict):
+                    vid = v.get('id') or v.get('version_id')
+                else:
+                    vid = getattr(v, 'id', None) or getattr(v, 'version_id', None)
+                if vid:
+                    labels.append(f"deployment_version_id:{vid}")
+        except Exception:
+            continue
+    return labels
+
+@st.cache_data(ttl=60, show_spinner=False)
+def cached_time_series(project_name, metric_name, start_iso, end_iso, aggregation_s, labels_param):
+    api = make_connection(project_name)
+    resp = api.time_series_data_list(
+        project_name=project_name,
+        metric=metric_name,
+        start_date=start_iso,
+        end_date=end_iso,
+        aggregation_period=aggregation_s,
+        labels=labels_param
+    )
+    data_points = resp.to_dict().get('data_points', [])
+    if not data_points:
+        return pd.DataFrame(columns=['timestamp', 'value'])
+    local_df = pd.DataFrame([
+        {"timestamp": pd.to_datetime(dp["end_date"]), "value": dp["value"]}
+        for dp in data_points
+    ])
+    return local_df
+
+def get_time_series_metric(api, project_name, metric_name, start_date, end_date, aggregation_s, labels=None):
+    """Fetches aggregated time-series data from UbiOps.
+    If labels is a list, fetch per label and aggregate across them (sum for counts, mean for durations).
+    """
+    def fetch_single(labels_param):
+        local_df = cached_time_series(
+            project_name,
+            metric_name,
+            start_date.isoformat(),
+            end_date.isoformat(),
+            aggregation_s,
+            labels_param
+        )
+        try:
+            if pd.api.types.is_datetime64tz_dtype(local_df["timestamp"]):
+                local_df["timestamp"] = local_df["timestamp"].dt.tz_convert(NETHERLANDS_TZ)
+            else:
+                local_df["timestamp"] = pd.to_datetime(local_df["timestamp"], utc=True).dt.tz_convert(NETHERLANDS_TZ)
         except Exception:
             pass
         if metric_name in ["deployments.requests", "deployments.failed_requests"]:
-            df['value'] = [round(x) for x in df['value'] * aggregation_s]
-        # For per-request boolean flag metrics that are aggregated over a window
-        # (e.g., average rate of unhappy requests per second), scale by the
-        # aggregation period to obtain counts in the window.
+            local_df['value'] = [round(x) for x in local_df['value'] * aggregation_s]
         if metric_name == "custom.time_to_first_token_larger_3s":
-            df['value'] = [round(x) for x in df['value'] * aggregation_s]
+            local_df['value'] = [round(x) for x in local_df['value'] * aggregation_s]
+        return local_df
 
-        return df
+    try:
+        # Aggregate across multiple labels if provided
+        if isinstance(labels, list):
+            dfs = []
+            for lab in labels:
+                df_lab = fetch_single(lab)
+                if not df_lab.empty:
+                    dfs.append(df_lab.rename(columns={'value': f"value_{len(dfs)}"}))
+            if not dfs:
+                return pd.DataFrame(columns=['timestamp', 'value'])
+            merged = dfs[0]
+            for other in dfs[1:]:
+                merged = pd.merge(merged, other, on='timestamp', how='outer')
+            # Fill missing with 0 for sums; for mean we will ignore NaNs
+            value_cols = [c for c in merged.columns if c.startswith('value_')]
+            if metric_name in ["deployments.request_duration", "custom.time_to_first_token"]:
+                merged['value'] = merged[value_cols].mean(axis=1, skipna=True)
+            else:
+                merged[value_cols] = merged[value_cols].fillna(0)
+                merged['value'] = merged[value_cols].sum(axis=1)
+            return merged[['timestamp', 'value']].sort_values('timestamp').reset_index(drop=True)
+        else:
+            return fetch_single(labels)
     except ubiops.exceptions.ApiException as e:
         st.error(f"API Error fetching '{metric_name}': {e}")
         return pd.DataFrame(columns=['timestamp', 'value'])
 
-def get_slow_requests_percentage(api, project_name, start_date, end_date, threshold_s=3.0):
-    """
-    Calculates the percentage of requests that took longer than a given threshold.
-    NOTE: This fetches individual request logs, which can be slow for large time ranges.
-    """
-    try:
-        # This endpoint fetches individual request details
-        all_requests = api.deployment_requests_list(
-            project_name=project_name,
-            start_date=start_date.isoformat(),
-            end_date=end_date.isoformat(),
-            status='completed',
-            deployment_name='vlam-chat-gemma'
-        )
-
-        
-        if not all_requests:
-            return 0.0
-
-        # durations = [req['duration'] for req in all_requests if req['duration'] is not None]
-        durations = []
-        for req in all_requests:
-            # If req is a dict
-            if isinstance(req, dict):
-                duration = req.get('duration')
-            else:
-                # If req is an object, try attribute access
-                duration = getattr(req, 'duration', None)
-            if duration is not None:
-                durations.append(duration)
-        if not durations:
-            return 0.0
-            
-        slow_requests = [d for d in durations if d > threshold_s]
-        percentage = (len(slow_requests) / len(durations)) * 100
-        return percentage
-
-    except ubiops.exceptions.ApiException as e:
-        st.error(f"API Error fetching deployment requests: {e}")
-        return "Error"
-    except Exception as ex:
-        st.error(f"An error occurred in get_slow_requests_percentage: {ex}")
-        return "Error"
-
-def get_slow_requests_percentage_from_df(df, threshold_s=3.0):
-    """
-    Calculates the percentage of requests where time to first token > threshold_s.
-    """
-    if df.empty or 'value' not in df.columns:
-        return 0.0
-    slow_count = (df['value'] > threshold_s).sum()
-    total_count = len(df)
-    if total_count == 0:
-        return 0.0
-    return (slow_count / total_count) * 100
+ 
 
 def get_time_window(period):
     # Use Netherlands timezone and convert to UTC for API queries
@@ -155,10 +164,8 @@ def fetch_ttf_fine_grained(api, project, labels_to_use, start, end):
     dfs = []
     day = datetime.timedelta(days=1)
     current = start
-    # print(start)
     while current < end:
         chunk_end = min(current + day, end)
-        # print(chunk_end)
         df = get_time_series_metric(api, project, 'custom.time_to_first_token', current, chunk_end, 60, labels=labels_to_use)
         if not df.empty:
             dfs.append(df)
@@ -308,7 +315,6 @@ def create_detailed_plot(stats, period_label):
     # Get the dataframes
     df_requests = data['df_requests']
     df_failed = data.get('df_failed', pd.DataFrame())
-    df_ttf = data.get('df_ttf', pd.DataFrame())
     df_unhappy = data.get('df_unhappy', pd.DataFrame())
     
     if df_requests.empty:
@@ -430,12 +436,52 @@ def main():
     with st.sidebar:
         st.header("📊 Dashboard Controls")
 
-        # Model selector
-        selected_model = st.selectbox(
-            "Select Model:",
-            options=["Mistral", "Gemma"],
-            index=0
-        )
+        # Deployment selector
+        project = 'poc'
+        api = make_connection(project)
+        all_deployments = list_deployments_cached(project)
+        # Initialize default selection on first load
+        if 'selected_deployments' not in st.session_state:
+            if 'vlam-chat-mistral-medium' in all_deployments:
+                st.session_state.selected_deployments = ['vlam-chat-mistral-medium']
+            else:
+                st.session_state.selected_deployments = all_deployments[:1] if all_deployments else []
+
+        # Dropdown-style popover containing searchable checkboxes and select-all controls
+        with st.popover("Select deployments", use_container_width=True):
+            search_term = st.text_input("Search deployments", value=st.session_state.get('deployments_search', ''), key="deployments_search")
+            filtered_deployments = [d for d in all_deployments if (search_term.lower() in d.lower())]
+
+            cols_sa = st.columns(2)
+            with cols_sa[0]:
+                if st.button("Select all (filtered)"):
+                    st.session_state.selected_deployments = sorted(list(set(st.session_state.selected_deployments).union(filtered_deployments)))
+            with cols_sa[1]:
+                if st.button("Clear all (filtered)"):
+                    st.session_state.selected_deployments = sorted(list(set(st.session_state.selected_deployments) - set(filtered_deployments)))
+
+            current_selection = set(st.session_state.selected_deployments)
+            updated_selection_filtered = set()
+            for dep in filtered_deployments:
+                checked = dep in current_selection
+                is_checked = st.checkbox(dep, value=checked, key=f"depchk_{dep}")
+                if is_checked:
+                    updated_selection_filtered.add(dep)
+
+            preserved = current_selection - set(filtered_deployments)
+            st.session_state.selected_deployments = sorted(list(preserved.union(updated_selection_filtered)))
+
+        selected_deployments = st.session_state.selected_deployments
+        st.caption(f"Selected {len(selected_deployments)} of {len(all_deployments)} deployments")
+
+        # Aggregated comparison view toggle
+        aggregated_view = st.checkbox("Aggregated view (compare deployments)", value=False, key="aggregated_view")
+        days_to_include = 1
+        if aggregated_view:
+            days_to_include = st.number_input(
+                "Days to include (for 'Last N Days' section)",
+                min_value=1, max_value=60, value=1, step=1, key="agg_days"
+            )
 
         st.divider()
 
@@ -540,9 +586,9 @@ def main():
         if st.button("🔄 Update Dashboard", type="primary", use_container_width=True):
             st.session_state.update_dashboard = True
 
-    # Determine project and labels based on selection
-    project = 'poc'
-    labels_to_use_summary = GEMMA_DEPLOYMENT_LABEL_POC if selected_model == 'Gemma' else MISTRAL_DEPLOYMENT_LABEL_POC
+    # Determine labels for summary based on selected deployments
+    api_for_summary = make_connection('poc')
+    labels_to_use_summary = get_labels_for_deployments_cached('poc', st.session_state.get('selected_deployments', []))
 
     # --- Always-visible summary cards and insights ---
     st.markdown("""
@@ -571,40 +617,42 @@ def main():
         st.session_state.summary_stats = {}
         st.session_state.summary_stats_time = None
 
-    card_cols = st.columns(len(periods))
-    for idx, (period, label) in enumerate(periods):
-        with card_cols[idx]:
-            btn = st.button(f"📊 Show {label} Plot", key=f"card_{period}", use_container_width=True)
+    if not st.session_state.get('aggregated_view', False):
+        card_cols = st.columns(len(periods))
+        for idx, (period, label) in enumerate(periods):
+            with card_cols[idx]:
+                btn = st.button(f"📊 Show {label} Plot", key=f"card_{period}", use_container_width=True)
 
-            if period not in st.session_state.summary_stats:
-                with st.spinner(f"Loading {label}..."):
-                    api = make_connection(project)
-                    s = fetch_summary_stats(api, project, labels_to_use_summary, period)
-                    st.session_state.summary_stats[period] = s
+                if period not in st.session_state.summary_stats:
+                    with st.spinner(f"Loading {label}..."):
+                        api = make_connection(project)
+                        s = fetch_summary_stats(api, project, labels_to_use_summary, period)
+                        st.session_state.summary_stats[period] = s
 
-            s = st.session_state.summary_stats.get(period)
-            if s:
-                st.markdown(
-                    f"<div class='summary-card'>"
-                    f"<div class='summary-title'>{label} ({selected_model})</div>"
-                    f"<div class='summary-value summary-grey'>Requests: {s['total_requests']:,}</div>"
-                    f"<div class='summary-value summary-grey'>Failed: {s['total_failed']:,}</div>"
-                    f"<div class='summary-value summary-green'>Happy: {s['happy']:,} ({s['happy_pct']:.0f}%)</div>"
-                    f"<div class='summary-value summary-red'>Unhappy: {s['unhappy']:,} ({s['unhappy_pct']:.0f}%)</div>"
-                    + (f"<div class='summary-sub'>Avg Unhappy Tokens (total/prompt/completion): {s.get('unhappy_avg_total_tokens', 0):.1f} / {s.get('unhappy_avg_prompt_tokens', 0):.1f} / {s.get('unhappy_avg_completion_tokens', 0):.1f}</div>" if s.get('unhappy', 0) > 0 else "")
-                    + (f"<div class='summary-sub'>Avg reaction time (unhappy only): {s.get('avg_unhappy_ttf', 0.0):.2f}s</div>" if s.get('unhappy', 0) > 0 else "")
-                    + f"<div class='summary-sub'>Avg reaction time: {s['avg_ttf']:.2f}s</div>"
-                    f"</div>", unsafe_allow_html=True
-                )
+                s = st.session_state.summary_stats.get(period)
+                if s:
+                    st.markdown(
+                        f"<div class='summary-card'>"
+                        f"<div class='summary-title'>{label} (Deployments: {', '.join(st.session_state.get('selected_deployments', []) or ['None'])})</div>"
+                        f"<div class='summary-value summary-grey'>Requests: {s['total_requests']:,}</div>"
+                        f"<div class='summary-value summary-grey'>Failed: {s['total_failed']:,}</div>"
+                        f"<div class='summary-value summary-green'>Happy: {s['happy']:,} ({s['happy_pct']:.0f}%)</div>"
+                        f"<div class='summary-value summary-red'>Unhappy: {s['unhappy']:,} ({s['unhappy_pct']:.0f}%)</div>"
+                        + (f"<div class='summary-sub'>Avg Unhappy Tokens (total/prompt/completion): {s.get('unhappy_avg_total_tokens', 0):.1f} / {s.get('unhappy_avg_prompt_tokens', 0):.1f} / {s.get('unhappy_avg_completion_tokens', 0):.1f}</div>" if s.get('unhappy', 0) > 0 else "")
+                        + (f"<div class='summary-sub'>Avg reaction time (unhappy only): {s.get('avg_unhappy_ttf', 0.0):.2f}s</div>" if s.get('unhappy', 0) > 0 else "")
+                        + f"<div class='summary-sub'>Avg reaction time: {s['avg_ttf']:.2f}s</div>"
+                        f"</div>", unsafe_allow_html=True
+                    )
 
-            if btn:
-                st.session_state.clicked_card = label
+                if btn:
+                    st.session_state.clicked_card = label
 
-    if st.session_state.summary_stats:
-        st.session_state.summary_stats_time = datetime.datetime.now(NETHERLANDS_TZ)
-        st.caption(f"Last updated: {st.session_state.summary_stats_time.strftime('%Y-%m-%d %H:%M:%S %Z')}")
+    if not st.session_state.get('aggregated_view', False):
+        if st.session_state.summary_stats:
+            st.session_state.summary_stats_time = datetime.datetime.now(NETHERLANDS_TZ)
+            st.caption(f"Last updated: {st.session_state.summary_stats_time.strftime('%Y-%m-%d %H:%M:%S %Z')}")
 
-    if st.session_state.clicked_card:
+    if not st.session_state.get('aggregated_view', False) and st.session_state.clicked_card:
         with st.expander(f"📈 Detailed View: {st.session_state.clicked_card}", expanded=True):
             fig = create_detailed_plot(st.session_state.summary_stats, st.session_state.clicked_card)
             if fig:
@@ -614,13 +662,107 @@ def main():
                 st.rerun()
 
     # --- Insights Section ---
-    st.markdown("<h3 style='margin-top:1.5rem;'>🔎 Automated Insights</h3>", unsafe_allow_html=True)
-    for period, label in periods:
-        s = st.session_state.summary_stats.get(period)
-        if s:
-            insight = get_peak_load_insight(s['df_requests'], period)
-            if insight:
-                st.info(f"{label}: {insight}")
+    if not st.session_state.get('aggregated_view', False):
+        st.markdown("<h3 style='margin-top:1.5rem;'>🔎 Automated Insights</h3>", unsafe_allow_html=True)
+        for period, label in periods:
+            s = st.session_state.summary_stats.get(period)
+            if s:
+                insight = get_peak_load_insight(s['df_requests'], period)
+                if insight:
+                    st.info(f"{label}: {insight}")
+
+    # --- Aggregated comparison view ---
+    if st.session_state.get('aggregated_view', False):
+        api_cmp = make_connection('poc')
+        selected = st.session_state.get('selected_deployments', [])
+        if not selected:
+            st.info("Select one or more deployments to compare.")
+        else:
+            st.markdown("<h3>🧮 Aggregated Comparison</h3>", unsafe_allow_html=True)
+
+            # Helper to build per-deployment labels
+            def labels_for_dep(dep_name):
+                return get_labels_for_deployments_cached('poc', [dep_name])
+
+            # Define two sections: Last Hour and Last N Days
+            now_utc = datetime.datetime.now(datetime.timezone.utc)
+            start_hour = (now_utc - datetime.timedelta(hours=1))
+            start_days = (now_utc - datetime.timedelta(days=st.session_state.get('agg_days', 1)))
+
+            sections = [
+                ("Last Hour", start_hour, now_utc),
+                (f"Last {st.session_state.get('agg_days', 1)} Days", start_days, now_utc)
+            ]
+
+            for section_title, start_dt, end_dt in sections:
+                with st.expander(section_title, expanded=True):
+                    total_steps = max(len(selected) * 5, 1)
+                    step_count = 0
+                    status_line = st.empty()
+                    progress = st.progress(0)
+
+                    # Plot 1: Requests and Failed Requests
+                    status_line.info("Fetching requests and failed requests in parallel...")
+                    fig1 = go.Figure()
+                    with ThreadPoolExecutor(max_workers=min(8, max(1, len(selected) * 2))) as executor:
+                        futures_r = {executor.submit(get_time_series_metric, api_cmp, 'poc', 'deployments.requests', start_dt, end_dt, aggregation_s, labels_for_dep(dep)): (dep, 'r') for dep in selected}
+                        futures_f = {executor.submit(get_time_series_metric, api_cmp, 'poc', 'deployments.failed_requests', start_dt, end_dt, aggregation_s, labels_for_dep(dep)): (dep, 'f') for dep in selected}
+                        for fut in as_completed({**futures_r, **futures_f}):
+                            dep, kind = ({**futures_r, **futures_f})[fut]
+                            try:
+                                df = fut.result()
+                            except Exception:
+                                df = None
+                            step_count += 1; progress.progress(min(step_count / total_steps, 1.0))
+                            if df is not None and not df.empty:
+                                if kind == 'r':
+                                    fig1.add_trace(go.Scatter(x=df['timestamp'], y=df['value'], mode='lines', name=f"{dep} - Requests"))
+                                else:
+                                    fig1.add_trace(go.Scatter(x=df['timestamp'], y=df['value'], mode='lines', name=f"{dep} - Failed"))
+                    fig1.update_layout(title="Requests and Failed Requests", xaxis_title="Time", yaxis_title="Count", height=420, showlegend=True, margin=dict(l=20, r=20, t=40, b=20))
+                    st.plotly_chart(fig1, use_container_width=True)
+
+                    # Plot 2: Token counts (Prompt vs Completion)
+                    status_line.info("Fetching token counts in parallel...")
+                    fig2 = go.Figure()
+                    with ThreadPoolExecutor(max_workers=min(8, max(1, len(selected) * 2))) as executor:
+                        futures_p = {executor.submit(get_time_series_metric, api_cmp, 'poc', 'custom.prompt_tokens', start_dt, end_dt, aggregation_s, labels_for_dep(dep)): (dep, 'p') for dep in selected}
+                        futures_c = {executor.submit(get_time_series_metric, api_cmp, 'poc', 'custom.completion_tokens', start_dt, end_dt, aggregation_s, labels_for_dep(dep)): (dep, 'c') for dep in selected}
+                        for fut in as_completed({**futures_p, **futures_c}):
+                            dep, kind = ({**futures_p, **futures_c})[fut]
+                            try:
+                                df = fut.result()
+                            except Exception:
+                                df = None
+                            step_count += 1; progress.progress(min(step_count / total_steps, 1.0))
+                            if df is not None and not df.empty:
+                                if kind == 'p':
+                                    fig2.add_trace(go.Scatter(x=df['timestamp'], y=df['value'], mode='lines', name=f"{dep} - Prompt Tokens"))
+                                else:
+                                    fig2.add_trace(go.Scatter(x=df['timestamp'], y=df['value'], mode='lines', name=f"{dep} - Completion Tokens"))
+                    fig2.update_layout(title="Token Counts (Prompt & Completion)", xaxis_title="Time", yaxis_title="Tokens", height=420, showlegend=True, margin=dict(l=20, r=20, t=40, b=20))
+                    st.plotly_chart(fig2, use_container_width=True)
+
+                    # Plot 3: Reaction Time (TTFT)
+                    status_line.info("Fetching reaction time in parallel...")
+                    fig3 = go.Figure()
+                    with ThreadPoolExecutor(max_workers=min(8, max(1, len(selected)))) as executor:
+                        futures_t = {executor.submit(get_time_series_metric, api_cmp, 'poc', 'custom.time_to_first_token', start_dt, end_dt, aggregation_s, labels_for_dep(dep)): dep for dep in selected}
+                        for fut in as_completed(futures_t):
+                            dep = futures_t[fut]
+                            try:
+                                df = fut.result()
+                            except Exception:
+                                df = None
+                            step_count += 1; progress.progress(min(step_count / total_steps, 1.0))
+                            if df is not None and not df.empty:
+                                fig3.add_trace(go.Scatter(x=df['timestamp'], y=df['value'], mode='lines', name=f"{dep} - TTFT"))
+                    fig3.update_layout(title="Reaction Time (Time to First Token)", xaxis_title="Time", yaxis_title="Seconds", height=420, showlegend=True, margin=dict(l=20, r=20, t=40, b=20))
+                    st.plotly_chart(fig3, use_container_width=True)
+
+                    # Clear status and progress when done
+                    status_line.empty()
+                    progress.empty()
     
     # --- KPI Cards: load and display one-by-one ---
     if 'update_dashboard' not in st.session_state:
@@ -633,7 +775,7 @@ def main():
             start_datetime = start_netherlands.astimezone(datetime.timezone.utc)
             end_datetime = end_netherlands.astimezone(datetime.timezone.utc)
             api = make_connection(project)
-            labels_to_use = GEMMA_DEPLOYMENT_LABEL_POC if selected_model == 'Gemma' else MISTRAL_DEPLOYMENT_LABEL_POC
+            labels_to_use = get_labels_for_deployments_cached(project, st.session_state.get('selected_deployments', []))
             DEPLOYMENT_METRICS = {
                 "deployments.credits": {"unit": "credits (float)", "description": "Usage of Credits"},
                 "deployments.input_volume": {"unit": "bytes (int)", "description": "Volume of incoming data in bytes"},
