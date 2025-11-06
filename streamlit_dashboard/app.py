@@ -499,15 +499,23 @@ def main():
             with cols_sa[0]:
                 if st.button("Select all (filtered)"):
                     st.session_state.selected_deployments = sorted(list(set(st.session_state.selected_deployments).union(filtered_deployments)))
+                    # Keep checkbox widget states in sync so they don't override on rerun
+                    for dep in filtered_deployments:
+                        st.session_state[f"depchk_{dep}"] = True
             with cols_sa[1]:
                 if st.button("Clear all (filtered)"):
                     st.session_state.selected_deployments = sorted(list(set(st.session_state.selected_deployments) - set(filtered_deployments)))
+                    # Keep checkbox widget states in sync so they don't override on rerun
+                    for dep in filtered_deployments:
+                        st.session_state[f"depchk_{dep}"] = False
 
             current_selection = set(st.session_state.selected_deployments)
             updated_selection_filtered = set()
             for dep in filtered_deployments:
                 checked = dep in current_selection
-                is_checked = st.checkbox(dep, value=checked, key=f"depchk_{dep}")
+                # Prefer explicit widget state if present; otherwise use derived selection
+                default_val = st.session_state.get(f"depchk_{dep}", checked)
+                is_checked = st.checkbox(dep, value=default_val, key=f"depchk_{dep}")
                 if is_checked:
                     updated_selection_filtered.add(dep)
 
