@@ -491,7 +491,8 @@ def main():
                 st.session_state.selected_deployments = all_deployments[:1] if all_deployments else []
 
         # Dropdown-style popover containing searchable checkboxes and select-all controls
-        with st.popover("Select deployments", width='stretch'):
+        # with st.popover("Select deployments", width='stretch'):
+        with st.popover("Select deployments"):
             search_term = st.text_input("Search deployments", value=st.session_state.get('deployments_search', ''), key="deployments_search")
             filtered_deployments = [d for d in all_deployments if (search_term.lower() in d.lower())]
 
@@ -634,7 +635,8 @@ def main():
         st.divider()
         
         # Update button
-        if st.button("🔄 Update Dashboard", type="primary", width='stretch'):
+        # if st.button("🔄 Update Dashboard", type="primary", width='stretch'):
+        if st.button("🔄 Update Dashboard", type="primary"):
             st.session_state.update_dashboard = True
 
     # Determine labels for summary based on selected deployments
@@ -675,7 +677,8 @@ def main():
         for idx, (period, label) in enumerate(periods):
             with card_cols[idx]:
                 # button per card
-                btn = st.button(f"📊 Show {label} Plot", key=f"card_{period}", width='stretch')
+                # btn = st.button(f"📊 Show {label} Plot", key=f"card_{period}", width='stretch')
+                btn = st.button(f"📊 Show {label} Plot", key=f"card_{period}")
                 if btn:
                     st.session_state.clicked_card = label
                 card_placeholders[period] = st.empty()
@@ -799,10 +802,10 @@ def main():
                             step_count += 1; progress.progress(min(step_count / total_steps, 1.0))
                             if df is not None and not df.empty:
                                 if kind == 'r':
-                                    fig1.add_trace(go.Scatter(x=df['timestamp'], y=df['value'], mode='lines', name=f"{dep} - Requests"))
+                                    fig1.add_trace(go.Bar(x=df['timestamp'], y=df['value'], name=f"{dep} - Requests"))
                                 else:
-                                    fig1.add_trace(go.Scatter(x=df['timestamp'], y=df['value'], mode='lines', name=f"{dep} - Failed"))
-                    fig1.update_layout(title="Requests and Failed Requests", xaxis_title="Time", yaxis_title="Count", height=420, showlegend=True, margin=dict(l=20, r=20, t=40, b=20))
+                                    fig1.add_trace(go.Bar(x=df['timestamp'], y=df['value'], name=f"{dep} - Failed"))
+                    fig1.update_layout(title="Requests and Failed Requests", xaxis_title="Time", yaxis_title="Count", height=420, showlegend=True, margin=dict(l=20, r=20, t=40, b=20), barmode='group')
                     st.plotly_chart(fig1, width='stretch', key=f"agg_{section_title}_fig1")
 
                     # Plot 2: Token counts (Prompt vs Completion)
@@ -820,10 +823,10 @@ def main():
                             step_count += 1; progress.progress(min(step_count / total_steps, 1.0))
                             if df is not None and not df.empty:
                                 if kind == 'p':
-                                    fig2.add_trace(go.Scatter(x=df['timestamp'], y=df['value'], mode='lines', name=f"{dep} - Prompt Tokens"))
+                                    fig2.add_trace(go.Bar(x=df['timestamp'], y=df['value'], name=f"{dep} - Prompt Tokens"))
                                 else:
-                                    fig2.add_trace(go.Scatter(x=df['timestamp'], y=df['value'], mode='lines', name=f"{dep} - Completion Tokens"))
-                    fig2.update_layout(title="Token Counts (Prompt & Completion)", xaxis_title="Time", yaxis_title="Tokens", height=420, showlegend=True, margin=dict(l=20, r=20, t=40, b=20))
+                                    fig2.add_trace(go.Bar(x=df['timestamp'], y=df['value'], name=f"{dep} - Completion Tokens"))
+                    fig2.update_layout(title="Token Counts (Prompt & Completion)", xaxis_title="Time", yaxis_title="Tokens", height=420, showlegend=True, margin=dict(l=20, r=20, t=40, b=20), barmode='group')
                     st.plotly_chart(fig2, width='stretch', key=f"agg_{section_title}_fig2")
 
                     # Plot 3: Reaction Time (TTFT)
@@ -839,8 +842,8 @@ def main():
                                 df = None
                             step_count += 1; progress.progress(min(step_count / total_steps, 1.0))
                             if df is not None and not df.empty:
-                                fig3.add_trace(go.Scatter(x=df['timestamp'], y=df['value'], mode='lines', name=f"{dep} - TTFT"))
-                    fig3.update_layout(title="Reaction Time (Time to First Token)", xaxis_title="Time", yaxis_title="Seconds", height=420, showlegend=True, margin=dict(l=20, r=20, t=40, b=20))
+                                fig3.add_trace(go.Bar(x=df['timestamp'], y=df['value'], name=f"{dep} - TTFT"))
+                    fig3.update_layout(title="Reaction Time (Time to First Token)", xaxis_title="Time", yaxis_title="Seconds", height=420, showlegend=True, margin=dict(l=20, r=20, t=40, b=20), barmode='group')
                     st.plotly_chart(fig3, width='stretch', key=f"agg_{section_title}_fig3")
 
                     # Clear status and progress when done
