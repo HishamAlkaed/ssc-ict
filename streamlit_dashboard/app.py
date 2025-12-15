@@ -26,6 +26,15 @@ API_TOKENS = _get_config_value("API_TOKENS", {})
 UBIOPS_HOST = _get_config_value("UBIOPS_HOST", "https://api.demo.vlam.ai/v2.1")
 DEFAULT_TIME_RANGE_DAYS = max(1, int(_get_config_value("DEFAULT_TIME_RANGE_DAYS", 1)))
 DEFAULT_AGGREGATION_SECONDS = int(_get_config_value("DEFAULT_AGGREGATION_SECONDS", 3600))
+LAST_HOUR_AGGREGATION_OPTIONS = _get_config_value(
+    "LAST_HOUR_AGGREGATION_OPTIONS",
+    {"1 minute": 60, "5 minutes": 300}
+)
+if not isinstance(LAST_HOUR_AGGREGATION_OPTIONS, dict) or not LAST_HOUR_AGGREGATION_OPTIONS:
+    LAST_HOUR_AGGREGATION_OPTIONS = {"1 minute": 60, "5 minutes": 300}
+DEFAULT_LAST_HOUR_AGG_SECONDS = int(_get_config_value("DEFAULT_LAST_HOUR_AGG_SECONDS", 300))
+if DEFAULT_LAST_HOUR_AGG_SECONDS not in LAST_HOUR_AGGREGATION_OPTIONS.values():
+    DEFAULT_LAST_HOUR_AGG_SECONDS = next(iter(LAST_HOUR_AGGREGATION_OPTIONS.values()))
 CHART_HEIGHT = int(_get_config_value("CHART_HEIGHT", 420))
 CHART_MARGIN = _get_config_value("CHART_MARGIN", dict(l=20, r=20, t=40, b=20))
 SLOW_REQUEST_THRESHOLD_SECONDS = float(_get_config_value("SLOW_REQUEST_THRESHOLD_SECONDS", 3.0))
@@ -798,6 +807,20 @@ def main():
         else:
             st.markdown("<h3>🧮 Aggregated Comparison</h3>", unsafe_allow_html=True)
 
+            last_hour_labels = list(LAST_HOUR_AGGREGATION_OPTIONS.keys())
+            default_last_hour_idx = next(
+                (i for i, label in enumerate(last_hour_labels) if LAST_HOUR_AGGREGATION_OPTIONS[label] == DEFAULT_LAST_HOUR_AGG_SECONDS),
+                0
+            )
+            last_hour_agg_label = st.radio(
+                "Last Hour granularity:",
+                options=last_hour_labels,
+                index=default_last_hour_idx,
+                horizontal=True,
+                key="last_hour_aggregation_label"
+            )
+            last_hour_aggregation_s = LAST_HOUR_AGGREGATION_OPTIONS[last_hour_agg_label]
+
             # Helper to build per-deployment labels
             def labels_for_dep(dep_name):
                 return get_labels_for_deployments_cached('poc', [dep_name])
@@ -814,6 +837,7 @@ def main():
 
             for section_title, start_dt, end_dt in sections:
                 with st.expander(section_title, expanded=True):
+                    section_aggregation_s = last_hour_aggregation_s if section_title == "Last Hour" else aggregation_s
                     total_steps = max(len(selected) * 5, 1)
                     step_count = 0
                     status_line = st.empty()
@@ -823,8 +847,8 @@ def main():
                     status_line.info("Fetching requests and failed requests in parallel...")
                     fig1 = go.Figure()
                     with ThreadPoolExecutor(max_workers=min(8, max(1, len(selected) * 2))) as executor:
-                        futures_r = {executor.submit(get_time_series_metric, api_cmp, 'poc', 'deployments.requests', start_dt, end_dt, aggregation_s, labels_for_dep(dep), False): (dep, 'r') for dep in selected}
-                        futures_f = {executor.submit(get_time_series_metric, api_cmp, 'poc', 'deployments.failed_requests', start_dt, end_dt, aggregation_s, labels_for_dep(dep), False): (dep, 'f') for dep in selected}
+                        futures_r = {executor.submit(get_time_series_metric, api_cmp, 'poc', 'deployments.requests', start_dt, end_dt, section_aggregation_s, labels_for_dep(dep), False): (dep, 'r') for dep in selected}
+                        futures_f = {executor.submit(get_time_series_metric, api_cmp, 'poc', 'deployments.failed_requests', start_dt, end_dt, section_aggregation_s, labels_for_dep(dep), False): (dep, 'f') for dep in selected}
                         for fut in as_completed({**futures_r, **futures_f}):
                             dep, kind = ({**futures_r, **futures_f})[fut]
                             try:
@@ -844,8 +868,8 @@ def main():
                     status_line.info("Fetching token counts in parallel...")
                     fig2 = go.Figure()
                     with ThreadPoolExecutor(max_workers=min(8, max(1, len(selected) * 2))) as executor:
-                        futures_p = {executor.submit(get_time_series_metric, api_cmp, 'poc', 'custom.prompt_tokens', start_dt, end_dt, aggregation_s, labels_for_dep(dep), False): (dep, 'p') for dep in selected}
-                        futures_c = {executor.submit(get_time_series_metric, api_cmp, 'poc', 'custom.completion_tokens', start_dt, end_dt, aggregation_s, labels_for_dep(dep), False): (dep, 'c') for dep in selected}
+                        futures_p = {executor.submit(get_time_series_metric, api_cmp, 'poc', 'custom.prompt_tokens', start_dt, end_dt, section_aggregation_s, labels_for_dep(dep), False): (dep, 'p') for dep in selected}
+                        futures_c = {executor.submit(get_time_series_metric, api_cmp, 'poc', 'custom.completion_tokens', start_dt, end_dt, section_aggregation_s, labels_for_dep(dep), False): (dep, 'c') for dep in selected}
                         for fut in as_completed({**futures_p, **futures_c}):
                             dep, kind = ({**futures_p, **futures_c})[fut]
                             try:
@@ -865,7 +889,7 @@ def main():
                     status_line.info("Fetching reaction time in parallel...")
                     fig3 = go.Figure()
                     with ThreadPoolExecutor(max_workers=min(8, max(1, len(selected)))) as executor:
-                        futures_t = {executor.submit(get_time_series_metric, api_cmp, 'poc', 'custom.time_to_first_token', start_dt, end_dt, aggregation_s, labels_for_dep(dep), False): dep for dep in selected}
+                        futures_t = {executor.submit(get_time_series_metric, api_cmp, 'poc', 'custom.time_to_first_token', start_dt, end_dt, section_aggregation_s, labels_for_dep(dep), False): dep for dep in selected}
                         for fut in as_completed(futures_t):
                             dep = futures_t[fut]
                             try:

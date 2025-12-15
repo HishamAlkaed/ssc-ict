@@ -6,7 +6,7 @@ Copy this file to config.py and replace the placeholder values with your own.
 
 # API tokens grouped by project. The dashboard currently references the "poc" project.
 API_TOKENS = {
-    "poc": "Token YOUR_POC_TOKEN_HERE",
+    "poc": "Token YOUR_CHAT_TOKEN_HERE",
     # "chat": "Token YOUR_CHAT_TOKEN_HERE",
 }
 
