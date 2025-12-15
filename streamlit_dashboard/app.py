@@ -5,18 +5,35 @@ import plotly.graph_objects as go
 import plotly.express as px
 import datetime
 import pytz
+import importlib
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # ==============================================================================
 # 1. UbiOps API Configuration & Helper Functions
 # ==============================================================================
 
-# --- Store credentials securely. Deel niet met derden onbewust---
-# zorg dat je token volgende permissions heeft: project-viewer, deployment-viewer, pipeline-viewer, service-user-viewer
-API_TOKENS = {
-    "poc": "Token 481b206efdcee52b165f011605263baea8d6319a"
-}
-# (labels are dynamically built from selected deployments' versions)
+try:
+    dashboard_config = importlib.import_module("config")
+except ModuleNotFoundError:
+    dashboard_config = importlib.import_module("config_example")
+
+
+def _get_config_value(name, default):
+    return getattr(dashboard_config, name, default)
+
+
+API_TOKENS = _get_config_value("API_TOKENS", {})
+UBIOPS_HOST = _get_config_value("UBIOPS_HOST", "https://api.demo.vlam.ai/v2.1")
+DEFAULT_TIME_RANGE_DAYS = max(1, int(_get_config_value("DEFAULT_TIME_RANGE_DAYS", 1)))
+DEFAULT_AGGREGATION_SECONDS = int(_get_config_value("DEFAULT_AGGREGATION_SECONDS", 3600))
+CHART_HEIGHT = int(_get_config_value("CHART_HEIGHT", 420))
+CHART_MARGIN = _get_config_value("CHART_MARGIN", dict(l=20, r=20, t=40, b=20))
+SLOW_REQUEST_THRESHOLD_SECONDS = float(_get_config_value("SLOW_REQUEST_THRESHOLD_SECONDS", 3.0))
+
+
+def get_chart_margin():
+    return dict(CHART_MARGIN) if isinstance(CHART_MARGIN, dict) else CHART_MARGIN
+
 
 # Netherlands timezone configuration
 NETHERLANDS_TZ = pytz.timezone('Europe/Amsterdam')
@@ -26,8 +43,12 @@ NETHERLANDS_TZ = pytz.timezone('Europe/Amsterdam')
 def make_connection(project_name):
     """Establish and cache a CoreApi client for the given project."""
     configuration = ubiops.Configuration()
-    configuration.api_key['Authorization'] = API_TOKENS[project_name]
-    configuration.host = "https://api.demo.vlam.ai/v2.1"
+    token = API_TOKENS.get(project_name)
+    if not token:
+        st.error(f"Missing API token for project '{project_name}'. Please update config.py.")
+        st.stop()
+    configuration.api_key['Authorization'] = token
+    configuration.host = UBIOPS_HOST
     api_client = ubiops.ApiClient(configuration)
     return ubiops.CoreApi(api_client)
 
@@ -234,7 +255,7 @@ def fetch_metric_fine_grained(api, project, labels_to_use, start, end, metric_na
         out = out.sort_values('timestamp').reset_index(drop=True)
     return out
 
-def fetch_summary_stats(api, project, labels_to_use, period, ttf_threshold=3.0, use_streamlit_cache=True):
+def fetch_summary_stats(api, project, labels_to_use, period, ttf_threshold=SLOW_REQUEST_THRESHOLD_SECONDS, use_streamlit_cache=True):
     start, end = get_time_window(period)
     # Choose aggregation period based on window length for requests/failed
     window_seconds = (end - start).total_seconds()
@@ -412,8 +433,9 @@ def create_detailed_plot(stats, period_label):
         xaxis_title="Time",
         yaxis_title="Number of Requests",
         barmode='stack',  # Stack failed requests on top
-        height=500,
+        height=CHART_HEIGHT + 100,
         showlegend=True,
+        margin=get_chart_margin(),
         legend=dict(
             x=0.99,
             y=0.99,
@@ -467,13 +489,15 @@ def main():
     
     # Initialize persistent defaults in session state (only once per session)
     if 'start_date' not in st.session_state:
-        st.session_state.start_date = (datetime.datetime.now(NETHERLANDS_TZ) - datetime.timedelta(days=1)).date()
+        st.session_state.start_date = (datetime.datetime.now(NETHERLANDS_TZ) - datetime.timedelta(days=DEFAULT_TIME_RANGE_DAYS)).date()
     if 'start_time' not in st.session_state:
         st.session_state.start_time = datetime.time(0, 0)
     if 'end_date' not in st.session_state:
         st.session_state.end_date = datetime.datetime.now(NETHERLANDS_TZ).date()
     if 'end_time' not in st.session_state:
         st.session_state.end_time = datetime.datetime.now(NETHERLANDS_TZ).time().replace(microsecond=0)
+    if 'agg_days' not in st.session_state:
+        st.session_state.agg_days = DEFAULT_TIME_RANGE_DAYS
 
     # Sidebar for controls (placed first so selections affect all sections)
     with st.sidebar:
@@ -528,11 +552,14 @@ def main():
 
         # Aggregated comparison view toggle
         aggregated_view = st.checkbox("Aggregated view (compare deployments)", value=False, key="aggregated_view")
-        days_to_include = 1
         if aggregated_view:
-            days_to_include = st.number_input(
+            st.number_input(
                 "Days to include (for 'Last N Days' section)",
-                min_value=1, max_value=60, value=1, step=1, key="agg_days"
+                min_value=1,
+                max_value=60,
+                value=st.session_state.get('agg_days', DEFAULT_TIME_RANGE_DAYS),
+                step=1,
+                key="agg_days"
             )
 
         st.divider()
@@ -576,10 +603,15 @@ def main():
             "12 hours": 43200,
             "1 day": 86400
         }
+        aggregation_labels = list(aggregation_options.keys())
+        default_agg_index = next(
+            (i for i, label in enumerate(aggregation_labels) if aggregation_options[label] == DEFAULT_AGGREGATION_SECONDS),
+            aggregation_labels.index("1 hour") if "1 hour" in aggregation_options else 0
+        )
         aggregation_label = st.selectbox(
             "Aggregation Period:",
-            options=list(aggregation_options.keys()),
-            index=4  # Default to 1 hour
+            options=aggregation_labels,
+            index=default_agg_index
         )
         aggregation_s = aggregation_options[aggregation_label]
         
@@ -688,7 +720,7 @@ def main():
         if missing_periods:
             api = make_connection(project)
             with ThreadPoolExecutor(max_workers=len(missing_periods)) as executor:
-                future_map = {executor.submit(fetch_summary_stats, api, project, labels_to_use_summary, p, 3.0, False): p for p in missing_periods}
+                future_map = {executor.submit(fetch_summary_stats, api, project, labels_to_use_summary, p, SLOW_REQUEST_THRESHOLD_SECONDS, False): p for p in missing_periods}
                 for fut in as_completed(future_map):
                     p = future_map[fut]
                     try:
@@ -773,7 +805,7 @@ def main():
             # Define two sections: Last Hour and Last N Days
             now_utc = datetime.datetime.now(datetime.timezone.utc)
             start_hour = (now_utc - datetime.timedelta(hours=1))
-            start_days = (now_utc - datetime.timedelta(days=st.session_state.get('agg_days', 1)))
+            start_days = (now_utc - datetime.timedelta(days=st.session_state.get('agg_days', DEFAULT_TIME_RANGE_DAYS)))
 
             sections = [
                 ("Last Hour", start_hour, now_utc),
@@ -805,7 +837,7 @@ def main():
                                     fig1.add_trace(go.Bar(x=df['timestamp'], y=df['value'], name=f"{dep} - Requests"))
                                 else:
                                     fig1.add_trace(go.Bar(x=df['timestamp'], y=df['value'], name=f"{dep} - Failed"))
-                    fig1.update_layout(title="Requests and Failed Requests", xaxis_title="Time", yaxis_title="Count", height=420, showlegend=True, margin=dict(l=20, r=20, t=40, b=20), barmode='group')
+                    fig1.update_layout(title="Requests and Failed Requests", xaxis_title="Time", yaxis_title="Count", height=CHART_HEIGHT, showlegend=True, margin=get_chart_margin(), barmode='group')
                     st.plotly_chart(fig1, width='stretch', key=f"agg_{section_title}_fig1")
 
                     # Plot 2: Token counts (Prompt vs Completion)
@@ -826,7 +858,7 @@ def main():
                                     fig2.add_trace(go.Bar(x=df['timestamp'], y=df['value'], name=f"{dep} - Prompt Tokens"))
                                 else:
                                     fig2.add_trace(go.Bar(x=df['timestamp'], y=df['value'], name=f"{dep} - Completion Tokens"))
-                    fig2.update_layout(title="Token Counts (Prompt & Completion)", xaxis_title="Time", yaxis_title="Tokens", height=420, showlegend=True, margin=dict(l=20, r=20, t=40, b=20), barmode='group')
+                    fig2.update_layout(title="Token Counts (Prompt & Completion)", xaxis_title="Time", yaxis_title="Tokens", height=CHART_HEIGHT, showlegend=True, margin=get_chart_margin(), barmode='group')
                     st.plotly_chart(fig2, width='stretch', key=f"agg_{section_title}_fig2")
 
                     # Plot 3: Reaction Time (TTFT)
@@ -843,7 +875,7 @@ def main():
                             step_count += 1; progress.progress(min(step_count / total_steps, 1.0))
                             if df is not None and not df.empty:
                                 fig3.add_trace(go.Bar(x=df['timestamp'], y=df['value'], name=f"{dep} - TTFT"))
-                    fig3.update_layout(title="Reaction Time (Time to First Token)", xaxis_title="Time", yaxis_title="Seconds", height=420, showlegend=True, margin=dict(l=20, r=20, t=40, b=20), barmode='group')
+                    fig3.update_layout(title="Reaction Time (Time to First Token)", xaxis_title="Time", yaxis_title="Seconds", height=CHART_HEIGHT, showlegend=True, margin=get_chart_margin(), barmode='group')
                     st.plotly_chart(fig3, width='stretch', key=f"agg_{section_title}_fig3")
 
                     # Clear status and progress when done
@@ -1032,9 +1064,9 @@ def display_metrics_charts(metric_dfs, metrics_to_display, metric_info):
                 
                 # Update layout
                 fig.update_layout(
-                    height=400,
+                    height=CHART_HEIGHT,
                     showlegend=False,
-                    margin=dict(l=20, r=20, t=40, b=20)
+                    margin=get_chart_margin()
                 )
                 
                 st.plotly_chart(fig, width='stretch', key=f"metric_plot_{metric}")

@@ -1,59 +1,55 @@
 # 🚀 Quick Start Guide
 
-## Get the Dashboard Running in 3 Steps
+Spin up the dashboard in minutes and start comparing deployments.
 
-### 1. **Install Dependencies**
+## 1. Install & Activate
+
 ```bash
+cd streamlit_dashboard
+python -m venv .venv && .venv/Scripts/activate  # optional
 pip install -r requirements.txt
 ```
 
-### 2. **Configure API Tokens** (Optional)
-Copy `config_example.py` to `config.py` and update with your UbiOps API tokens:
+## 2. Supply Credentials
+
+- Rename `config_example.py` to `config.py` (or export env vars) and add your UbiOps tokens.
+- Minimum requirement inside `config.py`:
+
 ```python
-API_TOKENS = {
-    "poc": "Token YOUR_ACTUAL_POC_TOKEN",
-    "chat": "Token YOUR_ACTUAL_CHAT_TOKEN"
-}
+API_TOKENS = {"poc": "Token YOUR_ACTUAL_POC_TOKEN"}
 ```
 
-### 3. **Run the Dashboard**
+Add more project tokens or deployment labels as needed.
 
-**Windows:**
-```bash
-run_dashboard.bat
-```
+## 3. Run the App
 
-**Mac/Linux:**
-```bash
-./run_dashboard.sh
-```
-
-**Or manually:**
 ```bash
 streamlit run app.py
 ```
 
+Open `http://localhost:8501`, pick deployments/time ranges in the sidebar, and hit **Update Dashboard**.
+
 ---
 
-## 🎯 What You'll See
+## 🎯 What You’ll See
 
-1. **Sidebar Controls**: Select project, time range, and metrics
-2. **KPI Cards**: Key performance indicators at the top
-3. **Interactive Charts**: Beautiful visualizations of your data
-4. **Real-time Updates**: Click "Update Dashboard" to fetch fresh data
+1. **Sidebar controls** for project, deployments, time window, aggregation, and metrics.
+2. **KPI cards** with action buttons that expand into detailed Plotly charts.
+3. **Aggregated comparison view** with grouped bars for requests, failures, tokens, and TTFT.
+4. **Metric explorer** that renders quick bar/line charts plus mean/max/min stats.
 
-## 🔧 Customization
+## 🔧 Customize
 
-- **Add Metrics**: Edit the metric dictionaries in `app.py`
-- **Change Styling**: Modify the CSS in the `st.markdown` section
-- **Configure API**: Update the `make_connection` function for different UbiOps instances
+- Add/rename metrics in the sidebar dictionaries inside `app.py`.
+- Adjust styling via the CSS block near the top of `app.py`.
+- Point `make_connection` to another UbiOps instance if required.
 
 ## 🆘 Need Help?
 
-- Check the full [README.md](README.md) for detailed instructions
-- Review the [troubleshooting section](README.md#troubleshooting)
-- Ensure your API tokens are correct and UbiOps service is accessible
+- Read the compact [README](README.md) for setup notes and tips.
+- Validate tokens and connectivity if charts stay empty.
+- Reach out through your usual project channel.
 
 ---
 
-**That's it!** Your dashboard should be running at `http://localhost:8501` 🎉 
+That’s it — your dashboard should be live at `http://localhost:8501` 🎉
